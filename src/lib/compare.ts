@@ -34,7 +34,10 @@ function valuesMeaning(ds: Dataset, field: string, ...concepts: string[]): strin
 
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 : null);
 
-export async function compareBoards(dimension: CompareDimension = "sector") {
+export async function compareBoards(rawDimension: CompareDimension = "sector") {
+  // The model writes "Sector" as often as "sector"; refusing on case alone
+  // turns a working question into a refusal.
+  const dimension = String(rawDimension ?? "").trim().toLowerCase() as CompareDimension;
   if (dimension !== "sector" && dimension !== "owner") {
     return {
       error: `Cannot compare on "${dimension}".`,
@@ -120,6 +123,7 @@ export async function compareBoards(dimension: CompareDimension = "sector") {
   return {
     dimension,
     delivered_means: `Counted as delivered: ${done}. Partial completions are not included.`,
+    covers: "All rows on both boards. This comparison has no date filter, so it is all-time, not the period in the question.",
     join_basis:
       dimension === "sector"
         ? "Sector, which matches on all six values the work order board uses."

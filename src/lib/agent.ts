@@ -204,6 +204,18 @@ function traceDetail(args: Record<string, unknown>, result: unknown): TraceDetai
   }
   if (Array.isArray(r.caveats) && r.caveats.length) detail.caveats = r.caveats.slice(0, 4);
 
+  // compare_boards is the one tool whose result has no board/filters/groups, so
+  // it produced an empty panel - the only step a reviewer could click and learn
+  // nothing from, on the tool whose reasoning most needs showing.
+  if (typeof r.dimension === "string" && Array.isArray(r.rows)) {
+    detail.query = `deals vs work_orders  ·  joined on ${r.dimension}  ·  ${r.rows.length} groups`;
+    detail.matched = r.rows.length;
+    if (typeof r.covers === "string") detail.caveats = [r.covers, ...(detail.caveats ?? [])].slice(0, 4);
+    if (Array.isArray(r.data_caveats) && r.data_caveats.length) {
+      detail.caveats = [...(detail.caveats ?? []), ...r.data_caveats.filter((c: unknown) => typeof c === "string")].slice(0, 4);
+    }
+  }
+
   if (typeof args.board === "string") detail.board = args.board;
   if (typeof args.group_by === "string") detail.groupBy = args.group_by;
   if (typeof args.timeframe === "string") detail.timeframe = args.timeframe;
@@ -248,6 +260,7 @@ function summarise(result: unknown): string {
   if (r?.values) return `${r.values.length} distinct values`;
   if (r?.period) return `brief for ${r.period}`;
   if (r?.datasets) return `${r.datasets.length} boards`;
+  if (r?.dimension && Array.isArray(r?.rows)) return `${r.rows.length} ${r.dimension} groups compared across both boards`;
   if (Array.isArray(r?.rows)) return `${r.rows.length} sample rows`;
   return "ok";
 }

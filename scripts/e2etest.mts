@@ -277,6 +277,34 @@ check("agent called a tool then answered", [events.includes("tool"), events.incl
   check("no single line can flood the prompt", longest <= 700, true);
 }
 
+/* --------------------------------------------------------- compare_boards */
+
+{
+  const cmp = await executeTool("compare_boards", { dimension: "Sector" }) as Record<string, any>;
+  check("a capitalised dimension is accepted", cmp.error === undefined, true);
+  check("it joins on sector", cmp.dimension, "sector");
+  check("it states that it is all-time", typeof cmp.covers === "string" && /all-time/i.test(cmp.covers), true);
+  check("it says what counted as delivered", typeof cmp.delivered_means === "string" && /Partial/i.test(cmp.delivered_means), true);
+
+  // A sector the delivery board never uses is a vocabulary difference, not a
+  // delivery gap - reporting it as "sold and never delivered" is wrong.
+  const cav = (cmp.data_caveats ?? []) as string[];
+  // The invariant that matters: a group the delivery board's vocabulary does
+  // not contain must never be reported as work sold and never delivered.
+  const woSectors = new Set(wo.rows.map((r) => String(r.f.sector ?? "").toLowerCase()));
+  const soldNotDelivered = cav.filter((c) => /Sold but not delivered/.test(c)).join(" ");
+  const namedButAbsent = [...new Set(deals.rows.map((r) => String(r.f.sector ?? "")))]
+    .filter((v) => v && !woSectors.has(v.toLowerCase()))
+    .filter((v) => soldNotDelivered.includes(v));
+  check("no sector absent from delivery is called a delivery gap", namedButAbsent, []);
+
+  // Its own conclusions must survive the caveat cap.
+  check("its own findings come first", cav.length === 0 || /vocabulary difference|Sold but not delivered|Delivered without/.test(cav[0]), true);
+
+  const bad = await executeTool("compare_boards", { dimension: "client" }) as Record<string, any>;
+  check("client is still refused", typeof bad.error === "string", true);
+}
+
 check("monday.com was actually queried", mondayCalls > 0, true);
 
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);

@@ -19,9 +19,11 @@ The LLM emits a structured query — filters, group-by, metrics. A deterministic
 `npm run eval` measures the same gate against the live agent:
 
 ```
-grounded   89/89 figures traced to a tool result (100%)
-derived    0        fabricated 0        14/15 cases
+grounded   67/68 figures traced to a tool result (98.5%)
+derived    1        fabricated 0        14/15 cases
 ```
+
+The one miss is a percentage the model divided in its head instead of calling `compute`. It used to read 100%, but that figure was inflated: `isGrounded` also multiplied bare numbers by 10³–10⁹ looking for a match, so an invented `32%` could land on a `sum_value` of 31,894,034. Removing that made the measurement honest rather than the agent worse.
 
 [`grounding.ts`](src/lib/grounding.ts) is the same module in both places, so the measured number is the enforced one. The first run scored 85.7% — every miss a percentage the model divided in its head — which is what produced the `compute` tool.
 
@@ -126,11 +128,11 @@ npm run dev
 **5. Verify without keys**
 
 ```bash
-npm test        # 264 checks, no network
+npm test        # 276 checks, no network
 ```
 
-- `npm run selftest` — 207 checks: every date format, currency form, timeframe, the filter/aggregate engine, the grounding gate
-- `npm run e2etest` — 57 checks: full chain with `fetch` stubbed to a board whose headers deliberately *don't* match the field names
+- `npm run selftest` — 212 checks: every date format, currency form, timeframe, the filter/aggregate engine, the grounding gate
+- `npm run e2etest` — 64 checks: full chain with `fetch` stubbed to a board whose headers deliberately *don't* match the field names
 - `npm run eval` — needs keys: 15 founder questions against the live agent
 
 Every push to `master` runs both suites in GitHub Actions and deploys to production only if they pass ([`deploy.yml`](.github/workflows/deploy.yml)).
