@@ -96,12 +96,22 @@ The five unmatched work-order columns are empty in the export; they stay queryab
 ### 1. monday.com
 
 1. Create a free account at [monday.com](https://monday.com).
-2. Import each spreadsheet as its own board — **Add → Import data → Excel**:
-   - `Deal funnel Data.xlsx` → board named e.g. **Deal Funnel**
-   - `Work_Order_Tracker Data.xlsx` → board named e.g. **Work Order Tracker**
-3. **The work order sheet has a blank first row** — when monday asks which row holds the headers, pick row 2, not row 1.
-4. Set column types where offered: **Date** for date columns, **Numbers** for the amount columns, **Status/Dropdown** for sector, stage and status. Not required — the app parses text columns too — but it improves mapping confidence and makes monday itself nicer to browse.
-5. Get a token: **avatar → Developers → My access tokens → Show**. Read scope is enough.
+2. Get a token: **avatar → Developers → My access tokens → Show**, and put it in `.env.local`.
+3. Create the boards, either way:
+
+   **Scripted** (one command, picks column types from the data):
+
+   ```bash
+   npx tsx scripts/import-to-monday.mts <folder-with-the-two-csvs>
+   ```
+
+   Add `--dry` to see the plan without writing. It is idempotent — re-running replaces a half-finished board rather than duplicating it — and it uploads values **verbatim**, because the messy data is the point of the exercise. This is the only script that writes to monday; the agent itself is read-only.
+
+   **By hand** — **Add → Import data → Excel**, once per file:
+   - `Deal funnel Data.xlsx` → board **Deal Funnel**
+   - `Work_Order_Tracker Data.xlsx` → board **Work Order Tracker**
+
+   > The work order sheet has a **blank first row** — when monday asks which row holds the headers, pick row 2.
 
 Then confirm what the app will see:
 
