@@ -310,7 +310,7 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: str
         model,
         messages,
         temperature: 0.1,
-        max_tokens: 8000,
+        max_tokens: 1024,
         tools: tools.length ? tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })) : undefined,
       }),
     });

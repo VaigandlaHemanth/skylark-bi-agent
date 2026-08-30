@@ -12,43 +12,18 @@ Ask *"How's our pipeline looking for the energy sector this quarter?"* and it in
 
 The LLM never adds, averages or estimates anything. It emits a structured query — filters, group-by, metrics — and a deterministic engine ([`src/lib/query.ts`](src/lib/query.ts)) returns the numbers plus a list of data-quality caveats. The model's only jobs are understanding the question and narrating the result.
 
-That removes the biggest failure mode of an LLM-over-spreadsheet tool: confidently wrong arithmetic. Click any step chip in a live answer and the query behind the figures opens up — the filters, the values the wording resolved to, the rows matched, the caveats. 
-> skylark-bi-agent@1.0.0 eval
-> tsx scripts/eval.mts
+That removes the biggest failure mode of an LLM-over-spreadsheet tool: confidently wrong arithmetic.
 
-PASS  vocab-energy  (16/16 figures grounded, 6.1s)
-PASS  vocab-negotiation  (4/4 figures grounded, 3.2s)
-FAIL  grounding-receivables  (14/17 figures grounded, 3.2s)
-FAIL  grounding-winrate  (13/14 figures grounded, 6.6s)
-FAIL  grounding-share  (5/6 figures grounded, 2.9s)
-FAIL  ops-overdue  (2/3 figures grounded, 9.1s)
-FAIL  brief  (22/23 figures grounded, 4.9s)
-PASS  caveat-sparse  (3/3 figures grounded, 2.7s)
-PASS  quality  (4/4 figures grounded, 2.6s)
-PASS  unknown-value  (1/1 figures grounded, 4.0s)
+It is **enforced, not asserted**. Before any answer ships, every figure in it is matched against everything the tools returned; one that fails is sent back with the offending numbers named. Each answer carries the count it passed, and clicking a step chip opens the query behind the figures — the filters, what the wording resolved to, the rows matched, the caveats.
 
-==========================================================================
-  cases      5/10 passed
-  grounded   84/91 figures traced to a tool result (92.3%)
-  derived    7  (arithmetic the model did itself - should have called compute)
-  fabricated 0  (no basis in retrieved data)
-  latency    4.5s average
-==========================================================================
+`npm run eval` measures the same gate against the live agent and live boards:
 
-FAIL  grounding-receivables   tools: query_board
-      3 figure(s) the model derived itself instead of calling compute: 54, 12484710.31, 34.4
+```
+grounded   95/95 figures traced to a tool result (100%)
+derived    0        fabricated 0
+```
 
-FAIL  grounding-winrate   tools: query_board → compute → query_board → query_board
-      1 figure(s) the model derived itself instead of calling compute: 60
-
-FAIL  grounding-share   tools: query_board
-      1 figure(s) the model derived itself instead of calling compute: 47
-
-FAIL  ops-overdue   tools: list_boards_and_fields → distinct_values → query_board → query_board → query_board
-      1 figure(s) the model derived itself instead of calling compute: 30
-
-FAIL  brief   tools: leadership_brief → query_board
-      1 figure(s) the model derived itself instead of calling compute: 113 measures the guarantee: **96.8% of figures traced to a tool result, 0 fabricated**.
+`src/lib/grounding.ts` is the same module in both places, so the number reported is the number enforced. The first run scored 85.7% — every miss a percentage the model had divided in its head — which is what produced the `compute` tool and per-group shares.
 
 ### 2. The board's vocabulary is never rewritten. The *user's* wording is translated onto it.
 
@@ -198,9 +173,9 @@ Add the same environment variables in **Project → Settings → Environment Var
 npm test
 ```
 
-**160 checks, no network and no API keys:**
+**184 checks, no network and no API keys:**
 
-- **`npm run selftest`** — 108 checks on the deterministic layer: every date format, currency form, quantity form, concept resolution, timeframe expression, and the filter/group/aggregate engine including null handling and caveat generation.
+- **`npm run selftest`** — 132 checks on the deterministic layer: every date format, currency form, quantity form, concept resolution, timeframe expression, and the filter/group/aggregate engine including null handling and caveat generation.
 - **`npm run eval`** — measures the agent itself against live boards: 10 founder questions, checking that every figure in the prose traces back to a tool result. Needs API keys. Latest: **96.8% grounded, 0 fabricated**.
 - **`npm run e2etest`** — 52 checks on the full chain, with `fetch` stubbed to serve two boards built from the **real** column headers and **real** vocabulary (`Masked Deal value`, `F. Negotiations`, `Executed until current month`, a repeated header row, `5360 HA`). It asserts the mapper resolves them, then runs the real agent loop end to end.
 

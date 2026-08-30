@@ -126,7 +126,14 @@ function readField(row: Row, field: string): string | number | null {
 function asNumber(v: string | number | null): number | null {
   if (v == null) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+
+  // The string has to actually look like a number. Stripping non-digits from
+  // "Zebra Corp" used to leave "" and Number("") is 0, so every text value
+  // compared and sorted as zero - silently turning a name sort into board
+  // order, with every figure in the result still perfectly grounded.
+  const stripped = String(v).trim().replace(/[₹$€£,\s]/g, "");
+  if (!/^-?(?:\d+\.?\d*|\.\d+)$/.test(stripped)) return null;
+  const n = Number(stripped);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -458,13 +465,13 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
       .map((d) => (d.fn === "count" ? "share_of_count_pct" : `share_of_${d.key}_pct`))
       .sort((a, b) => (a === "share_of_count_pct" ? 1 : 0) - (b === "share_of_count_pct" ? 1 : 0));
 
-    if (groups.length > 1) {
+    if (groups.length >= 3) {
       for (const key of shareKeys) {
         const top = [...groups].sort((a, b) => Number(b[key] ?? 0) - Number(a[key] ?? 0))[0];
         const share = Number(top?.[key] ?? 0);
         if (share < 50) continue;
         caveats.push(
-          `"${top[spec.group_by!]}" alone is ${share}% of the total by ${key.replace(/^share_of_|_pct$/g, "").replace(/_/g, " ")}, across ${top.count ?? "?"} row(s); the headline figure is concentrated in one group rather than typical of the whole.`,
+          `"${top[spec.group_by!]}" alone is ${share}% of the total by ${key.replace(/^share_of_|_pct$/g, "").replace(/_/g, " ")} ${top.count === undefined ? "" : ` across ${top.count} row(s)`}; the headline figure is concentrated in one group rather than typical of the whole.`,
         );
         break; // one is enough; more is noise
       }
@@ -473,6 +480,17 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
     // Shares are of the WHOLE, so a truncated list will not add up to 100.
     if (spec.limit && buckets.size > spec.limit && shareKeys.length) {
       caveats.push(`Showing the top ${spec.limit} of ${buckets.size} groups; shares are of the full total, so the rows shown do not add to 100%.`);
+    }
+
+    // Deal names repeat across unrelated records (one appears 27 times), so
+    // grouping by them merges rows that have nothing to do with each other.
+    if (spec.group_by === "deal_name" || spec.group_by === "name") {
+      const merged = [...buckets.values()].filter((b) => b.rows.length > 1).length;
+      if (merged) {
+        caveats.push(
+          `Deal names are not unique on this board: ${merged} of ${buckets.size} groups merge more than one record. Group by client for per-account figures, or return rows for individual deals.`,
+        );
+      }
     }
 
     const blanks = buckets.get("(blank)")?.rows.length ?? 0;
@@ -496,11 +514,17 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
         const bv = readField(b, field);
         const an = asNumber(av);
         const bn = asNumber(bv);
-        // Rows missing the sort field sink to the bottom either way.
-        if (an == null && bn == null) return 0;
-        if (an == null) return 1;
-        if (bn == null) return -1;
-        return dir * (bn - an);
+
+        if (an != null && bn != null) return dir * (bn - an);
+
+        // Not numeric: compare as text, which is what a name or an ISO date
+        // needs. Empty values sink whichever way the sort runs.
+        const as = av == null || av === "" ? null : String(av);
+        const bs = bv == null || bv === "" ? null : String(bv);
+        if (as == null && bs == null) return 0;
+        if (as == null) return 1;
+        if (bs == null) return -1;
+        return dir * bs.localeCompare(as, undefined, { numeric: true });
       });
     }
 

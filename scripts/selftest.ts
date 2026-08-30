@@ -372,6 +372,73 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   check("years and small ordinals are ignored", checkGrounding("In 2026 the top 3 clients led.", pool).checked, 0);
 }
 
+/* --------------------------------------------- round-two review regressions */
+
+{
+  const named = [
+    row("n1", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 10, close_date: "2026-03-01" }),
+    row("n2", { sector: "Railways", status: "Open", stage: "A. Lead Generated", value: 20, close_date: "2026-01-01" }),
+    row("n3", { sector: "Renewables", status: "Open", stage: "A. Lead Generated", value: 30, close_date: "2026-02-01" }),
+  ];
+  named[0].name = "Zebra Corp";
+  named[1].name = "Alpha Ltd";
+  named[2].name = "Mango Co";
+  const nds: Dataset = { ...ds, rows: named, rowCount: 3, distinct: {} };
+
+  // Sorting rows by a TEXT field used to be a silent no-op: stripping digits
+  // from "Zebra Corp" left "", and Number("") is 0, so everything tied.
+  const byName = runQuery(nds, { return_rows: true, sort: "deal_name asc" });
+  check("text sort orders alphabetically", byName.rows?.map((r) => r.item), ["Alpha Ltd", "Mango Co", "Zebra Corp"]);
+  const byNameDesc = runQuery(nds, { return_rows: true, sort: "deal_name desc" });
+  check("text sort reverses", byNameDesc.rows?.map((r) => r.item), ["Zebra Corp", "Mango Co", "Alpha Ltd"]);
+
+  // Dates are text too, and must not collapse to board order.
+  const byDate = runQuery(nds, { return_rows: true, sort: "close_date asc" });
+  check("date sort is chronological", byDate.rows?.map((r) => r.close_date), ["2026-01-01", "2026-02-01", "2026-03-01"]);
+
+  // With a limit, a broken sort returns the wrong SUBSET - every figure in it
+  // grounded, so the grounding gate cannot catch the error.
+  const top1 = runQuery(nds, { return_rows: true, limit: 1, sort: "value desc" });
+  check("limit keeps the true top row", top1.rows?.map((r) => r.value), [30]);
+
+  // gt/lt fall back to text comparison on purpose - that is what makes ISO
+  // date filters work - but a numeric field must still compare numerically.
+  check("numeric comparison stays numeric", runQuery(nds, { filters: [{ field: "value", op: "gt", value: "15" }], metrics: ["count"] }).matched, 2);
+  check("date comparison uses text ordering", runQuery(nds, { filters: [{ field: "close_date", op: "before", value: "2026-02-15" }], metrics: ["count"] }).matched, 2);
+
+  // Deal names repeat across unrelated records; grouping by them merges rows.
+  const dup = [...named, row("n4", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 5, close_date: null })];
+  dup[3].name = "Zebra Corp";
+  const dds: Dataset = { ...ds, rows: dup, rowCount: 4, distinct: {} };
+  const grouped = runQuery(dds, { group_by: "deal_name", metrics: ["count"] });
+  check("merging non-unique names is caveated", grouped.caveats.some((c) => c.includes("not unique")), true);
+}
+
+{
+  // A two-way split is not concentration. The win-rate recipe produces exactly
+  // two groups, so this fired on the commonest founder question.
+  const two = [
+    row("t1", { sector: "Mining", status: "Won", stage: "G. Project Won", value: 60, close_date: null }),
+    row("t2", { sector: "Mining", status: "Dead", stage: "L. Project Lost", value: 40, close_date: null }),
+  ];
+  const tds: Dataset = { ...ds, rows: two, rowCount: 2, distinct: {} };
+  const split = runQuery(tds, { group_by: "status", metrics: ["count"] });
+  check("a two-way split is not flagged as concentrated", split.caveats.some((c) => c.includes("concentrated")), false);
+  check("but the shares are still there", (split.groups?.[0] as Record<string, unknown>).share_of_count_pct, 50);
+
+  // Three-plus groups with a dominant one still warn, and never print "?".
+  const three = [
+    row("u1", { sector: "Tender", status: "Open", stage: "A. Lead Generated", value: 900, close_date: null }),
+    row("u2", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 60, close_date: null }),
+    row("u3", { sector: "Railways", status: "Open", stage: "A. Lead Generated", value: 40, close_date: null }),
+  ];
+  const uds: Dataset = { ...ds, rows: three, rowCount: 3, distinct: {} };
+  const conc = runQuery(uds, { group_by: "sector", metrics: ["sum:value"] });
+  const warning = conc.caveats.find((c) => c.includes("concentrated")) ?? "";
+  check("three groups with a dominant one still warn", warning.includes("Tender"), true);
+  check("no literal question mark for a missing count", warning.includes('"?"') || warning.includes("? row"), false);
+}
+
 /* -------------------------------------------------------------------- out */
 
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);
