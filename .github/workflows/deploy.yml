@@ -1,0 +1,66 @@
+name: Deploy to Vercel
+
+# The Vercel project is not linked to GitHub, so a push builds nothing on its
+# own. This does the linking job instead: test, then deploy to production.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# A fast second push should supersede the first rather than race it to
+# production, but never cancel a deploy that is already uploading.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Both suites stub the network, so they gate the deploy without needing
+      # the monday or model keys to be present in CI.
+      - name: Test
+        run: npm test
+
+      - name: Install Vercel CLI
+        run: npm i -g vercel@latest
+
+      - name: Pull project settings
+        run: vercel pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: Build
+        run: vercel build --prod --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: Deploy
+        id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "- Production: <${{ steps.deploy.outputs.url }}>"
+            echo "- Live URL: <https://skylark-bi-agent-chi.vercel.app>"
+            echo "- Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
