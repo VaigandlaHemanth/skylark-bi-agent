@@ -28,7 +28,7 @@ Every result carries a `caveats[]` array built by the engine: nulls excluded fro
 
 ### API rather than MCP
 
-The brief allowed either. MCP wraps the same GraphQL endpoint, and I wanted control over pagination, retries and the column-schema read. See §3 for why it could not have reached production.
+The brief allowed either. monday's MCP server is a local stdio process or an interactive OAuth flow, and a Vercel function has neither, so MCP could not have reached production here. It wraps the same GraphQL endpoint anyway, and I wanted control over pagination, retries and the column-schema read.
 
 ### A five minute cache
 
@@ -45,8 +45,6 @@ Free tiers cost latency. Timing a four-question session in production showed 30 
 A founder should not have to ask six questions to write the weekly update. `leadership_brief` is one call assembling the snapshot deterministically: open pipeline by stage, sector and probability with the largest deals named; won against lost with a win rate; active work orders and their status mix; cash, meaning order book, billed, collected, still to bill and receivables with the top accounts; risk, meaning deals and work orders past their dates; and deal value against work order value per sector, showing where sales is landing work delivery has not caught up to yet.
 
 The cash block was not in my original design — the work order board turned out to be as much a receivables ledger as a delivery tracker, and receivables are what founders ask about. The model only narrates; the structure is fixed in code, so every update has the same shape.
-
-The brief also allowed MCP. monday's MCP server is a local stdio process or an interactive OAuth flow, and a Vercel function has neither.
 
 ## 4. Measuring the claim
 
