@@ -109,10 +109,11 @@ export async function complete(system: string, turns: Turn[], tools: ToolSpec[],
     const { provider, model } = chain[i];
     // Retry only on the last rung. Anywhere else, failing over is faster than
     // waiting out a backoff.
-    const attempts = i === chain.length - 1 ? 3 : 1;
+    const isLast = i === chain.length - 1;
+    const attempts = isLast ? 3 : 1;
     try {
       const run = provider === "gemini" ? gemini : provider === "groq" ? groq : anthropic;
-      const result = await run(system, turns, tools, model, attempts);
+      const result = await run(system, turns, tools, model, attempts, isLast);
       // An empty turn with no tool call is a dead end; let the next provider try.
       if (!result.text && !result.toolCalls.length && chain.length > 1) {
         throw new LLMError(`${provider} returned an empty response`);
@@ -148,15 +149,29 @@ const NOT_WORTH_RETRYING = new Set([400, 401, 403, 404, 413, 429]);
  */
 const REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 15000);
 
-async function withRetry<T>(label: string, fn: (signal: AbortSignal) => Promise<T>, attempts = 3): Promise<T> {
+/**
+ * Whether a rate limit is worth waiting out depends on what is behind this
+ * provider. With a fallback available, failing over is faster. With nothing
+ * left, a few seconds of backoff is the difference between an answer and an
+ * error - free-tier limits are per minute and do clear.
+ */
+async function withRetry<T>(label: string, fn: (signal: AbortSignal) => Promise<T>, attempts = 3, isLast = false): Promise<T> {
   let last: unknown;
   for (let i = 0; i < attempts; i++) {
-    if (i) await new Promise((r) => setTimeout(r, 700 * 2 ** i));
+    if (i) {
+      const rateLimited = last instanceof LLMError && last.status === 429;
+      await new Promise((r) => setTimeout(r, rateLimited ? 4000 * i : 700 * 2 ** i));
+    }
     try {
       return await fn(AbortSignal.timeout(REQUEST_TIMEOUT_MS));
     } catch (err) {
       last = err;
-      if (err instanceof LLMError && err.status !== undefined && NOT_WORTH_RETRYING.has(err.status)) throw err;
+      const status = err instanceof LLMError ? err.status : undefined;
+      if (status === undefined) continue; // network or timeout: worth another go
+      // On the last rung a rate limit is worth waiting out; everywhere else the
+      // chain should move on. Everything else in the set stays fatal.
+      if (status === 429 && isLast) continue;
+      if (NOT_WORTH_RETRYING.has(status)) throw err;
     }
   }
   const why = last instanceof Error ? last.message : String(last);
@@ -185,7 +200,7 @@ function toGeminiSchema(s: JSONSchema): Record<string, unknown> {
   return out;
 }
 
-async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: string, attempts = 3) {
+async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: string, attempts = 3, isLast = false) {
   const key = process.env.GEMINI_API_KEY!;
 
   const contents: Array<Record<string, unknown>> = [];
@@ -260,12 +275,12 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: s
       }
     }
     return { text: text.trim(), toolCalls };
-  }, attempts);
+  }, attempts, isLast);
 }
 
 /* ------------------------------------------------------------------- Groq */
 
-async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: string, attempts = 3) {
+async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: string, attempts = 3, isLast = false) {
   const key = process.env.GROQ_API_KEY!;
 
   const messages: Array<Record<string, unknown>> = [{ role: "system", content: system }];
@@ -314,7 +329,7 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: str
       args: safeParse(c.function.arguments),
     }));
     return { text: (msg?.content ?? "").trim(), toolCalls };
-  }, attempts);
+  }, attempts, isLast);
 }
 
 function safeParse(s: string): Record<string, unknown> {
@@ -329,7 +344,7 @@ function safeParse(s: string): Record<string, unknown> {
 
 /* -------------------------------------------------------------- Anthropic */
 
-async function anthropic(system: string, turns: Turn[], tools: ToolSpec[], model: string, _attempts = 3) {
+async function anthropic(system: string, turns: Turn[], tools: ToolSpec[], model: string, _attempts = 3, _isLast = false) {
   const { default: AnthropicSDK } = await import("@anthropic-ai/sdk");
   const client = new AnthropicSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
 
