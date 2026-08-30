@@ -16,11 +16,11 @@ Access is read only. The only code that writes is a one-time import script the r
 
 ### The model never does arithmetic
 
-The LLM emits a structured query: filters, group-by, metrics. A deterministic engine in `src/lib/query.ts` computes it and returns the figures with their caveats. Every step is inspectable, so the claim is checkable rather than trusted. The agent can only answer what that DSL expresses, and a new calculation needs new tool code. In exchange no number is invented. With `Masked Deal value` only 48% filled, a confidently wrong sum was the failure mode I most wanted gone. Adversarial review fixed 26 defects, the instructive one being `parseNumber` concatenating digit runs so "1,00,000 - 2,00,000" entered a sum as 100 billion, uncaveated.
+The LLM emits a structured query: filters, group-by, metrics. A deterministic engine in `src/lib/query.ts` computes it and returns the figures with their caveats. Every step is inspectable, so the claim is checkable rather than trusted. The agent can only answer what that DSL expresses, and a new calculation needs new tool code. In exchange no number is invented — the failure mode I most wanted gone, with `Masked Deal value` only 48% filled. Adversarial review fixed 26 defects, the instructive one being `parseNumber` concatenating digit runs so "1,00,000 - 2,00,000" entered a sum as 100 billion, uncaveated.
 
 ### Values stay verbatim; the question gets translated
 
-My first version canonicalised at import: Renewables became Energy, "F. Negotiations" became Negotiation. Profiling the real export showed that collapses a clean 11-value sector list into a lossy 6-value one and silently discards DSP and Tender. So the concept tables run the other way, at query time: "energy" resolves to Renewables plus Powerline, reported inside the answer. The cost is over-matching, since "lead" also returns "Sales Qualified Leads" — stated, so it stays correctable.
+My first version canonicalised at import: Renewables became Energy, "F. Negotiations" became Negotiation. That collapses a clean 11-value sector list into a lossy 6-value one and silently discards DSP and Tender. So the concept tables run the other way, at query time: "energy" resolves to Renewables plus Powerline, reported inside the answer. The cost is over-matching, since "lead" also returns "Sales Qualified Leads" — stated, so it stays correctable.
 
 ### Cross-board comparison without a join key
 
@@ -40,7 +40,7 @@ Both boards are pulled whole and cached in process, so answers can be five minut
 
 ### Next.js on Vercel, Gemini on the free tier
 
-One deployable, one deploy command, server-sent events so the user watches each tool call. No database: the data fits in memory and the brief asked for dynamic reads. Free models are weak at multi-step tool use, so the DSL is shallow and string-valued and the board's vocabulary goes into the prompt.
+One deployable, server-sent events so the user watches each tool call. No database: the data fits in memory and the brief asked for dynamic reads. Free models are weak at multi-step tool use, so the DSL is shallow and string-valued and the board's vocabulary goes into the prompt.
 
 Free tiers cost latency. Timing a four-question session in production showed 30 to 56 seconds an answer, 26 of one question's 30 spent on a hanging call retried three times while the fallback answered the whole thing in five. Requests are capped at 15 seconds and a provider with another rung behind it gets one attempt, since failing over beats a backoff; only the last rung waits. Limits are per model, so the chain is four Gemini models on one key plus Groq. Answers land in 8 to 15 seconds.
 
@@ -58,7 +58,7 @@ An update that stays in a chat window has not been prepared, so any answer expor
 
 ## 5. What I would do differently
 
-Ten questions is thin; forty would be better, and each costs several free-tier requests, so a bad minute rate-limits some into skips.
+Fifteen questions is thin; forty would be better, and each costs several free-tier requests, so a bad minute rate-limits some into skips.
 
 Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; and a chart spec returned with the prose.
 
