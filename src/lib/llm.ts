@@ -58,15 +58,22 @@ function modelFor(p: Provider): string {
  * LLM_PROVIDER, when set, is moved to the front rather than made exclusive.
  */
 export function providerChain(): Array<{ provider: Provider; model: string }> {
-  const available: Provider[] = [];
-  if (process.env.GEMINI_API_KEY) available.push("gemini");
-  if (process.env.GROQ_API_KEY) available.push("groq");
-  if (process.env.ANTHROPIC_API_KEY) available.push("anthropic");
+  const chain: Array<{ provider: Provider; model: string }> = [];
+  if (process.env.GEMINI_API_KEY) {
+    chain.push({ provider: "gemini", model: modelFor("gemini") });
+    // Free-tier rate limits are PER MODEL, so a lite rung on the same key is
+    // a separate quota bucket - real extra capacity for free.
+    const lite = process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-lite-latest";
+    if (lite !== modelFor("gemini")) chain.push({ provider: "gemini", model: lite });
+  }
+  if (process.env.GROQ_API_KEY) chain.push({ provider: "groq", model: modelFor("groq") });
+  if (process.env.ANTHROPIC_API_KEY) chain.push({ provider: "anthropic", model: modelFor("anthropic") });
 
   const preferred = process.env.LLM_PROVIDER as Provider | undefined;
-  const ordered = preferred && available.includes(preferred) ? [preferred, ...available.filter((p) => p !== preferred)] : available;
-
-  return ordered.map((provider) => ({ provider, model: modelFor(provider) }));
+  if (preferred && chain.some((c) => c.provider === preferred)) {
+    return [...chain.filter((c) => c.provider === preferred), ...chain.filter((c) => c.provider !== preferred)];
+  }
+  return chain;
 }
 
 export function providerInfo(): { provider: Provider | null; model: string; configured: boolean; fallbacks: string[] } {
@@ -101,7 +108,7 @@ export async function complete(system: string, turns: Turn[], tools: ToolSpec[],
   for (const { provider, model } of chain) {
     try {
       const run = provider === "gemini" ? gemini : provider === "groq" ? groq : anthropic;
-      const result = await run(system, turns, tools);
+      const result = await run(system, turns, tools, model);
       // An empty turn with no tool call is a dead end; let the next provider try.
       if (!result.text && !result.toolCalls.length && chain.length > 1) {
         throw new LLMError(`${provider} returned an empty response`);
@@ -163,9 +170,8 @@ function toGeminiSchema(s: JSONSchema): Record<string, unknown> {
   return out;
 }
 
-async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
+async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: string) {
   const key = process.env.GEMINI_API_KEY!;
-  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
   const contents: Array<Record<string, unknown>> = [];
   for (const t of turns) {
@@ -243,9 +249,8 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
 
 /* ------------------------------------------------------------------- Groq */
 
-async function groq(system: string, turns: Turn[], tools: ToolSpec[]) {
+async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: string) {
   const key = process.env.GROQ_API_KEY!;
-  const model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
   const messages: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const t of turns) {
@@ -307,10 +312,9 @@ function safeParse(s: string): Record<string, unknown> {
 
 /* -------------------------------------------------------------- Anthropic */
 
-async function anthropic(system: string, turns: Turn[], tools: ToolSpec[]) {
+async function anthropic(system: string, turns: Turn[], tools: ToolSpec[], model: string) {
   const { default: AnthropicSDK } = await import("@anthropic-ai/sdk");
   const client = new AnthropicSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const model = process.env.ANTHROPIC_MODEL || "claude-opus-5";
 
   const messages: Anthropic.MessageParam[] = [];
   for (const t of turns) {

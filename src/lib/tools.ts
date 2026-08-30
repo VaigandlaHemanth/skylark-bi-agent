@@ -121,20 +121,33 @@ function coerceFilters(raw: unknown): Filter[] {
     }
   }
   if (!Array.isArray(raw)) return [];
+  // Lighter models write comparison symbols instead of the enum names.
+  const OP_ALIASES: Record<string, string> = { "=": "eq", "==": "eq", "!=": "ne", "<>": "ne", ">": "gt", ">=": "gte", "<": "lt", "<=": "lte" };
   return raw
     .filter((f): f is Record<string, unknown> => !!f && typeof f === "object")
-    .map((f) => ({
-      field: String(f.field ?? ""),
-      op: String(f.op ?? "eq"),
-      ...(f.value === undefined || f.value === null ? {} : { value: String(f.value) }),
-    }))
+    .map((f) => {
+      const op = String(f.op ?? "eq").trim().toLowerCase();
+      return {
+        field: String(f.field ?? ""),
+        op: OP_ALIASES[op] ?? op,
+        ...(f.value === undefined || f.value === null ? {} : { value: String(f.value) }),
+      };
+    })
     .filter((f) => f.field);
 }
 
 const BOARD_SCOPED = new Set(["query_board", "sample_rows", "data_quality", "distinct_values"]);
 
+/** "Deals", " deal funnel ", "WORK ORDERS" -> the canonical board key. */
+function coerceBoard(raw: unknown): BoardKey | null {
+  const b = String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (b === "deals" || b === "deal" || b === "deal_funnel") return "deals";
+  if (b === "work_orders" || b === "work_order" || b === "workorders" || b === "work_order_tracker") return "work_orders";
+  return null;
+}
+
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  const board = args.board as BoardKey;
+  const board = coerceBoard(args.board) as BoardKey;
   if (BOARD_SCOPED.has(name) && board !== "deals" && board !== "work_orders") {
     // Refuse rather than silently defaulting - a wrong board is a wrong answer.
     return { error: `The "board" parameter is required and must be "deals" or "work_orders" (got ${JSON.stringify(args.board)}).` };
