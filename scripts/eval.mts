@@ -33,7 +33,13 @@ const { boardsOverview } = await import("../src/lib/store");
  * deterministic layer as tool results, so a figure quoted from them is
  * grounded - counting it as fabricated would be wrong.
  */
-const PROMPT_FACTS = await boardsOverview();
+// A monday hiccup at startup must not take the whole run down with it.
+let PROMPT_FACTS: unknown = {};
+try {
+  PROMPT_FACTS = await boardsOverview();
+} catch (err) {
+  console.warn(`[eval] board overview unavailable, prompt facts will not count as grounded: ${err instanceof Error ? err.message : err}`);
+}
 
 /* ------------------------------------------------------------------- cases */
 
