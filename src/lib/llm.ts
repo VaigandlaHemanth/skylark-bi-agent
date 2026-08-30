@@ -60,11 +60,15 @@ function modelFor(p: Provider): string {
 export function providerChain(): Array<{ provider: Provider; model: string }> {
   const chain: Array<{ provider: Provider; model: string }> = [];
   if (process.env.GEMINI_API_KEY) {
-    chain.push({ provider: "gemini", model: modelFor("gemini") });
-    // Free-tier rate limits are PER MODEL, so a lite rung on the same key is
-    // a separate quota bucket - real extra capacity for free.
-    const lite = process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-lite-latest";
-    if (lite !== modelFor("gemini")) chain.push({ provider: "gemini", model: lite });
+    // Free-tier limits are PER MODEL, so every extra model on the same key is
+    // a separate quota bucket. Four rungs is four times the headroom at no
+    // cost, which is what keeps a demo answering when one bucket is spent.
+    const primary = modelFor("gemini");
+    const fallbacks = (process.env.GEMINI_FALLBACK_MODELS ?? "gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-3.1-flash-lite")
+      .split(",")
+      .map((m) => m.trim())
+      .filter((m) => m && m !== primary);
+    for (const model of [primary, ...fallbacks]) chain.push({ provider: "gemini", model });
   }
   if (process.env.GROQ_API_KEY) chain.push({ provider: "groq", model: modelFor("groq") });
   if (process.env.ANTHROPIC_API_KEY) chain.push({ provider: "anthropic", model: modelFor("anthropic") });
