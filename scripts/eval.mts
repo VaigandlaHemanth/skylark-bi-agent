@@ -85,6 +85,26 @@ const CASES: Case[] = [
     expectMentions: ["blank", "fill", "48", "missing", "excluded", "populated", "sparse"],
   },
   { id: "quality", q: "How reliable is the deal value column?", expectTool: ["data_quality", "query_board"], expectBoard: "deals" },
+  // Edge cases a founder will actually hit, and where a plausible-looking
+  // wrong answer is easiest to produce.
+  { id: "share-of-count", q: "What share of our open deals are in the Tender route?", expectTool: ["query_board"], expectBoard: "deals" },
+  { id: "cash-unbilled", q: "How much have we delivered but not yet billed?", expectTool: ["query_board", "leadership_brief"], expectBoard: "work_orders" },
+  { id: "owner-split", q: "Which owner has the most open pipeline?", expectTool: ["query_board"], expectBoard: "deals" },
+  {
+    id: "ambiguous-revenue",
+    q: "What is our revenue?",
+    // Won deal value and billed work-order value differ by roughly half, so
+    // this is the one question the agent should ask about rather than answer.
+    expectMentions: ["which", "?", "mean", "clarify", "won", "billed", "collected"],
+  },
+  {
+    id: "empty-timeframe",
+    q: "How many deals did we close in Q1 2020?",
+    expectTool: ["query_board"],
+    expectBoard: "deals",
+    // Long before the data starts; must say so rather than report a bare zero.
+    expectMentions: ["no ", "none", "zero", "0 ", "not "],
+  },
   {
     id: "unknown-value",
     q: "How's our pipeline in the banking sector?",

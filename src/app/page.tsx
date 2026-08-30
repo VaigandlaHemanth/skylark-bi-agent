@@ -65,6 +65,12 @@ const Icon = {
       <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ),
+  download: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 2.6v7.2M5 7l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 12.2v.6a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  ),
   plus: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
@@ -301,6 +307,45 @@ export default function Page() {
     inputRef.current?.focus();
   }, []);
 
+  /**
+   * "Help prepare data for leadership updates" ends in an email or a deck, not
+   * a chat window. This writes the answer out with the question that produced
+   * it, the boards it came from and the verification verdict, so the figures
+   * stay defensible once they leave here.
+   */
+  const exportAnswer = useCallback(
+    (index: number) => {
+      const answer = turns[index];
+      if (!answer) return;
+      const question = [...turns.slice(0, index)].reverse().find((t) => t.role === "user")?.content ?? "Question";
+      const now = new Date();
+      const stamp = now.toISOString().slice(0, 10);
+
+      const provenance = [
+        `Source: monday.com — Deal Funnel and Work Order Tracker, read live on ${now.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}.`,
+        answer.grounding?.checked
+          ? answer.grounding.clean
+            ? `Verification: all ${answer.grounding.checked} figures traced back to a board query.`
+            : `Verification: ${answer.grounding.grounded} of ${answer.grounding.checked} figures traced back to a board query; the rest could not be verified.`
+          : null,
+        answer.steps?.length ? `Queries run: ${answer.steps.filter((s) => s.kind !== "run").map((s) => s.label).join(", ")}.` : null,
+      ].filter(Boolean);
+
+      const NL = String.fromCharCode(10);
+      const md = [`# ${question}`, "", answer.content, "", "---", "", ...provenance.map((p) => `*${p}*`), ""].join(NL);
+
+      const url = URL.createObjectURL(new Blob([md], { type: "text/markdown;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `skylark-update-${stamp}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    },
+    [turns],
+  );
+
   const copyAnswer = useCallback((index: number, content: string) => {
     navigator.clipboard?.writeText(content).then(() => {
       setCopied(index);
@@ -376,6 +421,12 @@ export default function Page() {
                       {t.grounding.clean ? Icon.shield : "!"}
                       {t.grounding.clean ? `${t.grounding.checked} figures verified` : `${t.grounding.grounded}/${t.grounding.checked} verified`}
                     </span>
+                  )}
+                  {t.content && !t.content.startsWith("**Something went wrong") && (
+                    <button className="copy" onClick={() => exportAnswer(i)} aria-label="Download as Markdown" title="Download with its source and verification, ready to send">
+                      {Icon.download}
+                      <span>Export</span>
+                    </button>
                   )}
                   {t.content && !t.content.startsWith("**Something went wrong") && (
                     <button

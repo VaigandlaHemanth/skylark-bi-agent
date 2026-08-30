@@ -46,6 +46,8 @@ A founder should not have to ask six questions to write the weekly update. `lead
 
 The cash block was not in my original design — the work order board turned out to be as much a receivables ledger as a delivery tracker, and receivables are what founders ask about. The model only narrates; the structure is fixed in code, so every update has the same shape.
 
+An update that stays in a chat window has not been prepared, so any answer exports as Markdown carrying the question that produced it, the boards and the time it was read, and the verification verdict. The figures stay defensible once they leave the app.
+
 ## 4. Measuring the claim
 
 "The model never does arithmetic" is easy to assert, so it is enforced rather than requested: before an answer ships, every figure in it is matched against everything the tools returned, and one that fails goes back with the offending numbers named. `npm run eval` runs the same check over ten founder questions against the live boards — currently 100% of figures traced, zero fabricated — and `src/lib/grounding.ts` is the same module in both places, so the measured number is the enforced one. The README carries the detail.

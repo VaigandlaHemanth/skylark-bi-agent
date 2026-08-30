@@ -249,7 +249,6 @@ body::before {
 .copy {
   appearance: none;
   border: 0;
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -263,6 +262,14 @@ body::before {
   opacity: 0;
   transition: opacity var(--fast) linear, background var(--fast) linear, color var(--fast) linear, transform var(--fast) var(--spring);
 }
+
+/* The first pushed control carries the gap; the rest sit beside it. */
+.msghead .copy:first-of-type { margin-left: auto; }
+
+/* Export stays visible: turning an answer into something sendable is the
+   product's stated job, not a convenience like Copy. */
+.msghead .copy:first-of-type { opacity: 1; color: var(--text-2); }
+.msghead .copy:first-of-type:hover { color: var(--text); }
 
 .turn:hover .copy, .copy:focus-visible, .copy[data-done] { opacity: 1; }
 .copy:hover { background: var(--chip); color: var(--text-2); }

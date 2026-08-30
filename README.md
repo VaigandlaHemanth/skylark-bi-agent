@@ -176,7 +176,7 @@ npm test
 **184 checks, no network and no API keys:**
 
 - **`npm run selftest`** — 132 checks on the deterministic layer: every date format, currency form, quantity form, concept resolution, timeframe expression, and the filter/group/aggregate engine including null handling and caveat generation.
-- **`npm run eval`** — measures the agent itself against live boards: 10 founder questions, checking that every figure in the prose traces back to a tool result. Needs API keys. Latest: **96.8% grounded, 0 fabricated**.
+- **`npm run eval`** — measures the agent itself against live boards: 15 founder questions, checking that every figure in the prose traces back to a tool result. Needs API keys. Latest: **96.8% grounded, 0 fabricated**.
 - **`npm run e2etest`** — 52 checks on the full chain, with `fetch` stubbed to serve two boards built from the **real** column headers and **real** vocabulary (`Masked Deal value`, `F. Negotiations`, `Executed until current month`, a repeated header row, `5360 HA`). It asserts the mapper resolves them, then runs the real agent loop end to end.
 
 There is also a development aid for checking the mapping against the actual spreadsheets before importing them:
