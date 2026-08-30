@@ -32,7 +32,7 @@
   --fast: 180ms;
   --base: 380ms;
 
-  --shell: 46rem;
+  --shell: 48rem;
 
   font: 100% / 1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-optical-sizing: auto;
@@ -92,9 +92,14 @@ body::before {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+}
+
+/* Readable measure for conversation content only - chrome spans the window. */
+.shell {
+  width: 100%;
   max-width: var(--shell);
-  margin: 0 auto;
-  padding: 0 max(1rem, env(safe-area-inset-left));
+  margin-inline: auto;
+  padding-inline: max(1rem, env(safe-area-inset-left));
 }
 
 /* Translucent chrome that content scrolls *under*. */
@@ -105,7 +110,7 @@ body::before {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.85rem 0.25rem 0.7rem;
+  padding: 0.85rem max(1.25rem, env(safe-area-inset-left)) 0.7rem;
   background: color-mix(in srgb, var(--bg) 62%, transparent);
   backdrop-filter: blur(var(--blur)) saturate(180%);
   -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
@@ -167,10 +172,18 @@ body::before {
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
-  padding: 0.5rem 0.25rem 1rem;
+  padding: 0.5rem 0 1rem;
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
+}
+
+.thread > * {
+  width: 100%;
+  max-width: var(--shell);
+  margin-inline: auto;
+  padding-inline: max(1rem, env(safe-area-inset-left));
+  box-sizing: border-box;
 }
 
 .turn { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -245,7 +258,14 @@ body::before {
 
 /* ---------------------------------------------------------- empty state */
 
-.empty { margin: auto 0; padding: 1rem 0.25rem 2rem; animation: rise 500ms var(--spring) both; }
+/* margin-block only: the inline centering comes from .thread > *. */
+.empty { margin-block: auto; padding: 1rem 1rem 2rem; animation: rise 500ms var(--spring) both; }
+
+/* On tall/wide screens the hero can breathe a little more. */
+@media (min-width: 1200px) {
+  :root { --shell: 50rem; }
+  .lede { font-size: clamp(1.7rem, 3vw, 2.3rem); }
+}
 
 .lede {
   font-size: clamp(1.5rem, 4.2vw, 2rem);
@@ -299,10 +319,16 @@ body::before {
 .composer {
   position: sticky;
   bottom: 0;
-  padding: 0.5rem 0 max(0.75rem, env(safe-area-inset-bottom));
+  padding: 0.5rem max(1rem, env(safe-area-inset-left)) max(0.75rem, env(safe-area-inset-bottom));
   background: color-mix(in srgb, var(--bg) 58%, transparent);
   backdrop-filter: blur(var(--blur)) saturate(180%);
   -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+}
+
+.composer .field,
+.composer .foot {
+  max-width: calc(var(--shell) - 2rem);
+  margin-inline: auto;
 }
 
 .field {
