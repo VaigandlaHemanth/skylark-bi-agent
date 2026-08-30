@@ -22,9 +22,13 @@ The LLM emits a structured query: filters, group-by, metrics. A deterministic en
 
 My first version canonicalised at import: Renewables became Energy, "F. Negotiations" became Negotiation. Profiling the real export showed that collapses a clean 11-value sector list into a lossy 6-value one and silently discards DSP and Tender. So the concept tables run the other way, at query time: "energy" resolves to Renewables plus Powerline, reported inside the answer. The cost is over-matching, since "lead" also returns "Sales Qualified Leads" — stated, so it stays correctable.
 
+### Cross-board comparison without a join key
+
+The boards share no row-level key, but they do line up on two categoricals: sector matches on all six values the work order board uses, owner on six of seven. So `compare_boards` joins at the group level and refuses anything else with the reason. It answers what neither board can alone — Railways carries 59.9M of work orders with 0.4% billed, and Tender holds 532M of pipeline with no work orders at all.
+
 ### Caveats as data
 
-Every result carries a `caveats[]` array built by the engine: nulls excluded from sums, blank groups, unresolved terms, dropped header rows, low fill rates, totals one group dominates, groups that merged non-unique names. The model folds the material ones into prose. Answers run longer and become defensible.
+Every result carries a `caveats[]` array built by the engine: nulls excluded from sums, blank groups, unresolved terms, dropped header rows, low fill rates, totals one group dominates, groups that merged non-unique names. The material ones are enforced, not requested — an answer that drops every one gets it appended verbatim from the engine, because communicating data quality is a requirement and the eval caught the model quietly omitting a 48% fill rate under a total.
 
 ### API rather than MCP
 
@@ -58,7 +62,7 @@ Ten questions is thin; forty would be better, and each costs several free-tier r
 
 Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; and a chart spec returned with the prose.
 
-I wanted to follow one deal from lead to collected, and the boards will not support it. Client codes share nothing (199 on one side, 51 on the other, zero overlap) and deal names are many-to-many, one appearing 27 times, so joining on them multiplies rows fourfold. Linking the two sides needs a key the export does not carry.
+Following one deal from lead to collected still needs a key the export does not carry: client codes share nothing (199 against 51, zero overlap) and deal names repeat, one 27 times, multiplying rows fourfold on a join. Per-record linkage would need monday to carry a deal id on both boards.
 
 ## 6. AI tools used
 

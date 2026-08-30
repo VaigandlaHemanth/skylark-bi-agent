@@ -1,6 +1,7 @@
 /** Tool surface exposed to the model. Each one is deterministic. */
 
 import { leadershipBrief } from "./brief";
+import { compareBoards, type CompareDimension } from "./compare";
 import type { JSONSchema, ToolSpec } from "./llm";
 import { runQuery, type Filter } from "./query";
 import { boardsOverview, getDataset, type BoardKey } from "./store";
@@ -114,6 +115,21 @@ export const TOOL_SPECS: ToolSpec[] = [
         label: { type: "string", description: "What is being computed, e.g. 'top 3 clients as a share of receivables'." },
       },
       required: ["op", "values"],
+    },
+  },
+  {
+    name: "compare_boards",
+    description:
+      "Compare the sales side against the delivery side, grouped by sector or owner: open and won deals next to work orders, order value, billed and receivable, plus what percentage is delivered and billed. Use for anything spanning both boards - where pipeline is strong but delivery is not, who sells more than gets billed, which sectors appear on one board only.",
+    parameters: {
+      type: "object",
+      properties: {
+        dimension: {
+          type: "string",
+          enum: ["sector", "owner"],
+          description: "What to line the two boards up on. Only these two match across both; client codes have zero overlap.",
+        },
+      },
     },
   },
   {
@@ -285,6 +301,9 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
           return { label, op: "sum", inputs: values, sum: round(sum), expression: values.join(" + ") };
       }
     }
+
+    case "compare_boards":
+      return compareBoards((args.dimension as CompareDimension) ?? "sector");
 
     case "leadership_brief":
       return leadershipBrief((args.timeframe as string) || "this quarter", args.sector as string | undefined);

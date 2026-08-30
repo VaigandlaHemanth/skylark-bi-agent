@@ -1,6 +1,6 @@
 /** The agent loop: question -> tool calls -> grounded answer. */
 
-import { checkGrounding, correctionPrompt, numbersIn, type GroundingReport } from "./grounding";
+import { appendMissingCaveats, checkGrounding, correctionPrompt, numbersIn, type GroundingReport } from "./grounding";
 import { complete, LLMError, providerInfo, type Completion, type Turn } from "./llm";
 import { MondayError } from "./monday";
 import { getDataset, type BoardKey } from "./store";
@@ -61,6 +61,7 @@ ${schema}
 - Deal outcome lives in Deal Status: Open / Won / Dead / On Hold. "Dead" is the lost bucket.
 - On the work order board, delivery progress is Execution Status, and money splits into order value, billed, collected, still-to-bill and receivable. Questions about cash, collections or AR belong to that board.
 - The sector list mixes industries with procurement routes: "Tender" and "DSP" describe HOW a deal is bought, not WHAT industry it is in. Tender in particular carries very few, very large deals, so it can dominate a value total while representing almost no deal count. Say so when it tops a ranking.
+- The two boards share no row-level key, so they cannot be joined per record. They line up on sector and on owner, which is what compare_boards uses. Reach for it whenever a question spans sales and delivery.
 - "Revenue" is ambiguous across these two boards: won deal value (sales) or billed/collected work-order value (finance). The two differ by roughly a factor of two here, so a bare "what is our revenue" is the one case where you should ASK which is meant rather than choose. If the question already points at a side - "closed revenue", "collections", "what have we billed" - answer it and name the reading you used.
 
 ## Handling ambiguity
@@ -232,6 +233,9 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
   // Every figure any tool returned this question. The answer is checked
   // against this before it ships.
   const retrieved = new Set<number>();
+  // Caveats every tool raised this question, so an answer cannot quietly drop
+  // the ones that change how its figures should be read.
+  const raisedCaveats: string[] = [];
   let corrections = 0;
 
   /**
@@ -261,7 +265,8 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
     }
 
     if (!reply.toolCalls.length) {
-      const text = reply.text || "I could not produce an answer for that. Try rephrasing the question.";
+      const raw = reply.text || "I could not produce an answer for that. Try rephrasing the question.";
+      const text = reply.text ? appendMissingCaveats(raw, raisedCaveats) : raw;
       const report = verify(text);
 
       if (!report.clean && corrections < MAX_CORRECTIONS && reply.text) {
@@ -304,6 +309,10 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
       }
 
       numbersIn(payload, retrieved);
+      const pc = (payload as { caveats?: unknown })?.caveats;
+      if (Array.isArray(pc)) for (const c of pc) if (typeof c === "string") raisedCaveats.push(c);
+      const dc = (payload as { data_caveats?: unknown })?.data_caveats;
+      if (Array.isArray(dc)) for (const c of dc) if (typeof c === "string") raisedCaveats.push(c);
 
       let content = JSON.stringify(payload);
       if (content.length > TOOL_RESULT_CAP) {
@@ -325,8 +334,9 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
     });
     const final = await complete(system, turns, [], stickyProvider);
     if (final.text) {
-      const report = verify(final.text);
-      yield { type: "answer", text: final.text, grounding: { checked: report.checked, grounded: report.grounded, clean: report.clean } };
+      const withCaveats = appendMissingCaveats(final.text, raisedCaveats);
+      const report = verify(withCaveats);
+      yield { type: "answer", text: withCaveats, grounding: { checked: report.checked, grounded: report.grounded, clean: report.clean } };
       return;
     }
   } catch {

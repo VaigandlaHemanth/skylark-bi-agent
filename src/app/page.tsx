@@ -28,6 +28,7 @@ const SUGGESTIONS: Array<{ cat: string; q: string }> = [
   { cat: "Sales", q: "What's our win rate, and where are we losing?" },
   { cat: "Cash", q: "How much is sitting in receivables, and with whom?" },
   { cat: "Delivery", q: "How much work is overdue?" },
+  { cat: "Cross-board", q: "Where is pipeline strong but delivery lagging?" },
   { cat: "Data quality", q: "How reliable is the deal value column?" },
 ];
 
@@ -38,6 +39,7 @@ const TOOL_LABELS: Record<string, string> = {
   sample_rows: "Inspecting records",
   data_quality: "Checking data quality",
   compute: "Computing a derived figure",
+  compare_boards: "Comparing sales against delivery",
   leadership_brief: "Assembling exec snapshot",
 };
 

@@ -21,7 +21,7 @@ import {
   SECTOR_CONCEPTS,
   WORK_STATUS_CONCEPTS,
 } from "../src/lib/normalize";
-import { checkGrounding, correctionPrompt, numbersIn, numbersInProse } from "../src/lib/grounding";
+import { appendMissingCaveats, checkGrounding, correctionPrompt, materialCaveats, numbersIn, numbersInProse } from "../src/lib/grounding";
 import { resolveTimeframe, runQuery } from "../src/lib/query";
 import type { Dataset, Row } from "../src/lib/store";
 
@@ -437,6 +437,28 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   const warning = conc.caveats.find((c) => c.includes("concentrated")) ?? "";
   check("three groups with a dominant one still warn", warning.includes("Tender"), true);
   check("no literal question mark for a missing count", warning.includes('"?"') || warning.includes("? row"), false);
+}
+
+/* ------------------------------------------------------ the caveat gate */
+
+{
+  const sparse = ['179 of 344 matched rows have no "value" value; they are excluded from sums and averages on that field.'];
+  const noise = ["Showing 8 of 48 matched rows."];
+
+  check("a rows-excluded caveat is material", materialCaveats(sparse).length, 1);
+  check("a display-only caveat is not", materialCaveats(noise).length, 0);
+
+  // An answer that silently drops the caveat gets it back, verbatim.
+  const bare = appendMissingCaveats("Total deal value is 2,305,518,040.91.", sparse);
+  check("a missing caveat is appended", bare.includes("excluded from sums"), true);
+  check("and marked as a footnote", bare.trimEnd().endsWith("*"), true);
+
+  // An answer that already says it is left alone.
+  const covered = appendMissingCaveats("Total is 2,305,518,040.91, though 179 rows are blank.", sparse);
+  check("an answer that already says it is untouched", covered.includes("excluded from sums"), false);
+  const worded = appendMissingCaveats("Total is X, but many values are missing.", sparse);
+  check("paraphrase counts as saying it", worded.includes("excluded from sums"), false);
+  check("nothing is added when nothing is material", appendMissingCaveats("All good.", noise), "All good.");
 }
 
 /* -------------------------------------------------------------------- out */

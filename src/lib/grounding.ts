@@ -137,3 +137,41 @@ export function correctionPrompt(report: GroundingReport): string {
   lines.push("Rewrite the answer so every figure comes from a tool result. Do not apologise or mention this check.");
   return lines.join(" ");
 }
+
+
+/* ------------------------------------------------------ data-quality gate */
+
+/**
+ * A caveat is material when it changes how a figure should be read: rows
+ * dropped from a sum, a column that is half empty, a total one group
+ * dominates, groups merged under a repeated name.
+ */
+const MATERIAL = /excluded from sums|are excluded|only \d+% filled|concentrated in one group|not unique|could not be read|shown as "\(blank\)"|do not add to 100/i;
+
+export function materialCaveats(caveats: string[]): string[] {
+  return caveats.filter((c) => MATERIAL.test(c));
+}
+
+/** Loose check that the prose already says what a caveat says. */
+function alreadySaid(answer: string, caveat: string): boolean {
+  const a = answer.toLowerCase();
+  const numbers = caveat.match(/\d[\d,.]*/g) ?? [];
+  if (numbers.some((n) => a.includes(n.toLowerCase()))) return true;
+  return /blank|missing|excluded|incomplete|not populated|unfilled|only .{0,12}filled|caveat|concentrat|not unique/.test(a);
+}
+
+/**
+ * "Communicate data quality issues to the user" is a requirement, not a
+ * preference, so an answer that omits every material caveat gets one appended
+ * verbatim from the engine rather than being quietly shipped. Deterministic:
+ * no extra model call, and the text is the engine's own.
+ */
+export function appendMissingCaveats(answer: string, caveats: string[]): string {
+  const material = materialCaveats(caveats);
+  if (!material.length) return answer;
+  if (material.some((c) => alreadySaid(answer, c))) return answer;
+
+  const NL = String.fromCharCode(10);
+  const note = material.slice(0, 2).join(" ");
+  return `${answer}${NL}${NL}*${note}*`;
+}
