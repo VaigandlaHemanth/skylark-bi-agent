@@ -315,7 +315,19 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: str
       const detail = (await res.text()).slice(0, 300);
       // Groq's free tier is capped at 8k tokens/minute org-wide, so a long
       // transcript can exceed what one request is allowed to carry.
-      if (res.status === 413) throw new LLMError(`Groq 413: conversation exceeds the free-tier tokens-per-minute cap. ${detail}`, undefined, 413);
+      if (res.status === 413) {
+        // Groq returns 413 for two different things. A genuine over-size
+        // request is fatal; "tokens per minute" is a rate limit wearing the
+        // wrong status code, and it clears on its own - so report it as one.
+        const perMinute = /per minute|TPM|rate limit/i.test(detail);
+        throw new LLMError(
+          perMinute
+            ? `Groq: free-tier tokens-per-minute cap reached. ${detail}`
+            : `Groq 413: this conversation is too large for the model. ${detail}`,
+          undefined,
+          perMinute ? 429 : 413,
+        );
+      }
       throw new LLMError(`Groq HTTP ${res.status}: ${detail}`, undefined, res.status);
     }
 
