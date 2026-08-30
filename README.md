@@ -127,6 +127,8 @@ npm test        # 222 checks, no network
 - `npm run e2etest` — 52 checks: full chain with `fetch` stubbed to a board whose headers deliberately *don't* match the field names
 - `npm run eval` — needs keys: 15 founder questions against the live agent
 
+Every push to `master` runs both suites in GitHub Actions and deploys to production only if they pass ([`deploy.yml`](.github/workflows/deploy.yml)).
+
 ---
 
 ## What it handles
