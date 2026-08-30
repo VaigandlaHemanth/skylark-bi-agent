@@ -8,3 +8,6 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# scratch repros from audit agents
+scripts/__*
