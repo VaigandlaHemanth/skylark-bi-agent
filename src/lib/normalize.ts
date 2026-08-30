@@ -58,18 +58,23 @@ export function parseNumber(raw: string | null | undefined): { value: number | n
     }
   }
 
-  const digits = s.replace(/[()]/g, "").replace(/[^0-9.]/g, "");
-  if (!digits || digits === ".") return { value: null, note: `could not read a number from "${s}"` };
+  // Take the FIRST number token only. Stripping every non-digit globally would
+  // concatenate ranges: "1,00,000 - 2,00,000" must not become 100000200000.
+  const cleaned = s.replace(/[()]/g, "");
+  const token = cleaned.match(/\d[\d,]*(?:\.\d+)?|\.\d+/);
+  if (!token) return { value: null, note: `could not read a number from "${s}"` };
 
-  const parts = digits.split(".");
-  const numeric = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join("")}` : digits;
-  const n = Number(numeric);
+  const n = Number(token[0].replace(/,/g, ""));
   if (!Number.isFinite(n)) return { value: null, note: `could not read a number from "${s}"` };
 
+  const rest = cleaned.slice(cleaned.indexOf(token[0]) + token[0].length);
+  const hasMore = /\d/.test(rest);
+
   const value = n * multiplier * (negative ? -1 : 1);
-  return multiplier === 1
-    ? { value }
-    : { value, note: `read "${s}" as ${Math.round(value).toLocaleString("en-IN")}` };
+  const notes: string[] = [];
+  if (multiplier !== 1) notes.push(`read "${s}" as ${Math.round(value).toLocaleString("en-IN")}`);
+  if (hasMore) notes.push(`"${s}" contains more than one number; used the first`);
+  return notes.length ? { value, note: notes.join("; ") } : { value };
 }
 
 /**
@@ -149,7 +154,9 @@ export function parseDate(
     if (v) return { value: v };
   }
 
-  if ((m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/))) {
+  // Tolerate a trailing time ("13/04/2026 10:30") - falling through to the
+  // loose Date() fallback would silently flip to month-first parsing.
+  if ((m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})(?=$|[\sT,])/))) {
     const a = +m[1];
     const b = +m[2];
     const dayFirst = a > 12 ? true : b > 12 ? false : order === "dmy";
@@ -181,8 +188,10 @@ export function parseDate(
     return { value: iso(y, q * 3 - 2, 1), note: `"${s}" is quarter-level only; used the first day of the quarter` };
   }
 
-  if ((m = s.match(/^([A-Za-z]{3,9})[\s\-.]+(\d{4})$/))) {
+  if ((m = s.match(/^([A-Za-z]{3,9})[\s\-.]+(\d{2}|\d{4})$/))) {
     const mo = MONTHS[m[1].toLowerCase()];
+    // Two-digit years ("Aug-25") included: the loose fallback used to read
+    // that as 25 August 2001.
     if (mo) return { value: iso(+m[2], mo, 1), note: `"${s}" is month-level only; used the 1st` };
   }
 
@@ -201,7 +210,14 @@ export function parseDate(
 
   const fallback = new Date(s);
   if (!Number.isNaN(fallback.getTime())) {
-    return { value: fallback.toISOString().slice(0, 10), note: `"${s}" parsed loosely` };
+    const y = fallback.getFullYear();
+    if (y >= 1990 && y <= 2100) {
+      // Local date parts, NOT toISOString: JS parses bare dates at local
+      // midnight, and converting that to UTC shifts the day back in IST.
+      const isoLocal = `${y}-${String(fallback.getMonth() + 1).padStart(2, "0")}-${String(fallback.getDate()).padStart(2, "0")}`;
+      return { value: isoLocal, note: `"${s}" parsed loosely` };
+    }
+    return { value: null, note: `could not read a date from "${s}"` };
   }
 
   return { value: null, note: `could not read a date from "${s}"` };
@@ -329,8 +345,9 @@ export function expandTerm(
   return null;
 }
 
-const COMPANY_NOISE =
-  /\b(pvt|private|ltd|limited|llp|inc|incorporated|corp|corporation|co|company|plc|gmbh|group|holdings|industries|enterprises|solutions|technologies|technology|tech|services|projects)\b/g;
+// Legal suffixes only. Words like "Technologies" or "Services" are part of a
+// company's identity - stripping them merged distinct clients into one key.
+const COMPANY_NOISE = /\b(pvt|private|ltd|limited|llp|inc|incorporated|corp|corporation|co|company|plc|gmbh)\b/g;
 
 /** Grouping key so "Adani Green Pvt. Ltd." and "adani green" collapse together. */
 export function companyKey(raw: string | null | undefined): string | null {

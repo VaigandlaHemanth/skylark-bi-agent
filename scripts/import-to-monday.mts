@@ -161,12 +161,20 @@ async function buildBoard(boardName: string, header: string[], data: string[][])
 
   if (DRY) return;
 
-  // Re-running must not leave half-imported duplicates behind.
+  // Re-running must not leave half-imported duplicates behind - but deleting a
+  // board is destructive, so it only happens when explicitly requested.
   const existing = await gql<{ boards: Array<{ id: string; name: string }> }>(
     `query { boards(limit: 100, state: active) { id name } }`,
   );
-  for (const b of existing.boards.filter((x) => x.name === boardName)) {
-    console.log(`   removing earlier partial board ${b.id}`);
+  const clashes = existing.boards.filter((x) => x.name === boardName);
+  if (clashes.length && !process.argv.includes("--replace")) {
+    throw new Error(
+      `A board named "${boardName}" already exists (${clashes.map((b) => b.id).join(", ")}). ` +
+        `Re-run with --replace to delete and re-import it, or rename the old board first.`,
+    );
+  }
+  for (const b of clashes) {
+    console.log(`   --replace: removing existing board ${b.id}`);
     await gql(`mutation ($id: ID!) { delete_board(board_id: $id) { id } }`, { id: b.id });
     await new Promise((r) => setTimeout(r, 1000));
   }

@@ -51,10 +51,13 @@ export function resolveTimeframe(phrase: string | undefined, now = today()): { f
     return mk(from, now, `last ${n} ${rel[2]}${n > 1 ? "s" : ""} (${iso(from)} to ${iso(now)})`);
   }
 
-  const fy = p.match(/\bfy\s*'?(\d{2,4})\b/) || p.match(/financial year\s*'?(\d{2,4})/);
+  const fy = p.match(/\bfy\s*'?(\d{2,4})(?:\s*[-/]\s*(\d{2,4}))?\b/) || p.match(/financial year\s*'?(\d{2,4})(?:\s*[-/]\s*(\d{2,4}))?/);
   if (fy) {
-    const raw = Number(fy[1]);
-    const start = raw < 100 ? 2000 + raw - 1 : raw - 1; // FY26 = Apr 2025 - Mar 2026 (Indian convention)
+    const a = Number(fy[1]);
+    const full = (n: number) => (n < 100 ? 2000 + n : n);
+    // Range notation "FY 2025-26" names the STARTING year; bare "FY26" names
+    // the ending year (both are the same Indian Apr-Mar year).
+    const start = fy[2] !== undefined ? full(a) : full(a) - 1;
     return mk(U(start, 3, 1), U(start + 1, 2, 31), `FY${String(start).slice(-2)}-${String(start + 1).slice(-2)} (1 Apr ${start} to 31 Mar ${start + 1})`);
   }
   if (/\b(this|current)\s+(financial year|fy)\b/.test(p)) {
@@ -62,10 +65,12 @@ export function resolveTimeframe(phrase: string | undefined, now = today()): { f
     return mk(U(start, 3, 1), U(start + 1, 2, 31), `current financial year (1 Apr ${start} to 31 Mar ${start + 1})`);
   }
 
-  const qExplicit = p.match(/\bq([1-4])\s*(?:of\s*)?'?(\d{4})?\b/);
+  const qExplicit = p.match(/\bq([1-4])\s*(?:of\s*)?'?(\d{2,4})?\b/);
   if (qExplicit) {
     const q = Number(qExplicit[1]);
-    const yy = qExplicit[2] ? Number(qExplicit[2]) : y;
+    const raw = qExplicit[2] ? Number(qExplicit[2]) : NaN;
+    // "Q3 25" means 2025, not the current year.
+    const yy = Number.isNaN(raw) ? y : raw < 100 ? 2000 + raw : raw;
     return mk(U(yy, (q - 1) * 3, 1), U(yy, q * 3, 0), `Q${q} ${yy} (calendar)`);
   }
 
@@ -313,10 +318,32 @@ export type QueryResult = {
   caveats: string[];
 };
 
+/**
+ * The model may name a field by its monday column title ("Masked Deal value").
+ * When that column is mapped, translate to the canonical field so comparisons
+ * run on PARSED values (numbers, ISO dates) instead of raw cell text.
+ */
+function toCanonicalField(ds: Dataset, field: string | undefined): string | undefined {
+  if (!field) return field;
+  const f = field.trim();
+  if (ds.mapping.some((m) => m.field === f)) return f;
+  const byTitle = ds.mapping.find((m) => m.columnTitle.toLowerCase() === f.toLowerCase());
+  return byTitle ? byTitle.field : f;
+}
+
 export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
   const caveats: string[] = [];
   const resolved: Array<Record<string, unknown>> = [];
-  const filters: Filter[] = [...(spec.filters ?? [])];
+  const filters: Filter[] = (spec.filters ?? []).map((f) => ({ ...f, field: toCanonicalField(ds, f.field) ?? f.field }));
+  spec = {
+    ...spec,
+    date_field: toCanonicalField(ds, spec.date_field),
+    group_by: toCanonicalField(ds, spec.group_by),
+    metrics: spec.metrics?.map((m) => {
+      const [fn, field] = m.split(":").map((x) => x.trim());
+      return field ? `${fn}:${toCanonicalField(ds, field)}` : fn;
+    }),
+  };
 
   // Timeframe -> a between filter on the most sensible date field.
   const tf = resolveTimeframe(spec.timeframe);
@@ -363,22 +390,47 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
   };
 
   if (spec.group_by) {
-    const buckets = new Map<string, Row[]>();
+    // Bucket on a normalized key (companyKey for clients) so spelling and case
+    // variants merge - the data-quality warning promises exactly that. The
+    // most frequent original spelling becomes the displayed label.
+    const isClient = spec.group_by === "client";
+    const buckets = new Map<string, { rows: Row[]; labels: Map<string, number> }>();
     for (const r of matchedRows) {
       const v = readField(r, spec.group_by);
-      const key = v == null || v === "" ? "(blank)" : String(v);
-      if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key)!.push(r);
+      const text = v == null || v === "" ? null : String(v);
+      const key = text == null ? "(blank)" : (isClient ? companyKey(text) : normKey(text)) || "(blank)";
+      if (!buckets.has(key)) buckets.set(key, { rows: [], labels: new Map() });
+      const b = buckets.get(key)!;
+      b.rows.push(r);
+      const label = text ?? "(blank)";
+      b.labels.set(label, (b.labels.get(label) ?? 0) + 1);
     }
 
-    let groups = [...buckets.entries()].map(([key, rs]) => ({ [spec.group_by!]: key, ...aggregate(rs, defs).out }));
-    const sortKey = (spec.sort || "").replace(/\s*(desc|asc)$/i, "").trim() || defs.find((d) => d.fn !== "count")?.key || "count";
+    let groups = [...buckets.entries()].map(([key, b]) => {
+      const label = key === "(blank)" ? "(blank)" : [...b.labels.entries()].sort((x, y) => y[1] - x[1])[0][0];
+      return { [spec.group_by!]: label, ...aggregate(b.rows, defs).out };
+    });
+
+    // Accept "sum:value desc" as well as "sum_value desc"; fall back to text
+    // comparison when the key is not numeric, so sorting never no-ops.
+    const sortKey = ((spec.sort || "").replace(/\s*(desc|asc)$/i, "").trim() || defs.find((d) => d.fn !== "count")?.key || "count").replace(":", "_");
     const ascending = /asc$/i.test(spec.sort || "");
-    groups.sort((a, b) => (ascending ? -1 : 1) * (Number(b[sortKey] ?? 0) - Number(a[sortKey] ?? 0)));
+    const dir = ascending ? -1 : 1;
+    groups.sort((a, b) => {
+      // Fall back to the group label only when the sort key is absent
+      // entirely; a null metric sorts as 0, not as its label.
+      const has = sortKey in a || sortKey in b;
+      const av = has ? a[sortKey] : a[spec.group_by!];
+      const bv = has ? b[sortKey] : b[spec.group_by!];
+      const an = Number(av ?? 0);
+      const bn = Number(bv ?? 0);
+      if (Number.isFinite(an) && Number.isFinite(bn)) return dir * (bn - an);
+      return dir * String(bv ?? "").localeCompare(String(av ?? ""));
+    });
     if (spec.limit) groups = groups.slice(0, spec.limit);
     result.groups = groups;
 
-    const blanks = buckets.get("(blank)")?.length ?? 0;
+    const blanks = buckets.get("(blank)")?.rows.length ?? 0;
     if (blanks) caveats.push(`${blanks} matched rows have no "${spec.group_by}" value and are shown as "(blank)".`);
   }
 

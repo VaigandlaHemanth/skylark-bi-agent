@@ -39,7 +39,7 @@ export type Turn =
 export type Provider = "gemini" | "groq" | "anthropic";
 
 export class LLMError extends Error {
-  constructor(message: string, readonly hint?: string) {
+  constructor(message: string, readonly hint?: string, readonly status?: number) {
     super(message);
     this.name = "LLMError";
   }
@@ -81,8 +81,14 @@ export function providerInfo(): { provider: Provider | null; model: string; conf
 
 export type Completion = { text: string; toolCalls: ToolCall[]; provider: Provider; model: string };
 
-export async function complete(system: string, turns: Turn[], tools: ToolSpec[]): Promise<Completion> {
-  const chain = providerChain();
+export async function complete(system: string, turns: Turn[], tools: ToolSpec[], prefer?: Provider): Promise<Completion> {
+  // Stickiness: once a step succeeded on provider X, later steps of the same
+  // question try X first, so the tool-call history stays in one dialect
+  // (Gemini thought signatures do not replay across providers).
+  let chain = providerChain();
+  if (prefer && chain.some((c) => c.provider === prefer)) {
+    chain = [...chain.filter((c) => c.provider === prefer), ...chain.filter((c) => c.provider !== prefer)];
+  }
   if (!chain.length) {
     throw new LLMError(
       "No model provider is configured on the server.",
@@ -121,7 +127,7 @@ export async function complete(system: string, turns: Turn[], tools: ToolSpec[])
  * clear in two seconds, and burning three backoffs on it only delays the
  * failover to a provider that is free right now.
  */
-const NOT_WORTH_RETRYING = /\b(400|401|403|404|413|429)\b/;
+const NOT_WORTH_RETRYING = new Set([400, 401, 403, 404, 413, 429]);
 
 async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   let last: unknown;
@@ -131,7 +137,9 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
       return await fn();
     } catch (err) {
       last = err;
-      if (NOT_WORTH_RETRYING.test(err instanceof Error ? err.message : String(err))) throw err;
+      // Judge retryability by the typed status, never by numbers that happen
+      // to appear inside an unrelated error message.
+      if (err instanceof LLMError && err.status !== undefined && NOT_WORTH_RETRYING.has(err.status)) throw err;
     }
   }
   throw new LLMError(`${label} failed after 3 attempts: ${last instanceof Error ? last.message : String(last)}`);
@@ -169,15 +177,20 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
       for (const c of t.toolCalls) {
         parts.push({
           functionCall: { name: c.name, args: c.args },
-          ...(c.signature ? { thoughtSignature: c.signature } : {}),
+          // Gemini 3 requires a thoughtSignature on replayed function calls.
+          // Calls authored by a fallback provider have none, so send Google's
+          // documented placeholder rather than 400 on the whole request.
+          thoughtSignature: c.signature ?? "context_engineering_is_the_way_to_go",
         });
       }
       if (parts.length) contents.push({ role: "model", parts });
     } else {
-      contents.push({
-        role: "user",
-        parts: [{ functionResponse: { name: t.name, response: { result: t.content } } }],
-      });
+      // Parallel tool results must be PARTS of one user turn - Gemini rejects
+      // consecutive user turns that each carry a lone functionResponse.
+      const part = { functionResponse: { name: t.name, response: { result: t.content } } };
+      const prev = contents[contents.length - 1] as { role: string; parts: Array<Record<string, unknown>> } | undefined;
+      if (prev?.role === "user" && prev.parts.every((p) => "functionResponse" in p)) prev.parts.push(part);
+      else contents.push({ role: "user", parts: [part] });
     }
   }
 
@@ -201,8 +214,8 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
 
     if (!res.ok) {
       const detail = await res.text();
-      if (res.status === 429) throw new LLMError("Gemini free-tier rate limit hit (429). Wait a few seconds and ask again.");
-      throw new LLMError(`Gemini HTTP ${res.status}: ${detail.slice(0, 400)}`);
+      if (res.status === 429) throw new LLMError("Gemini 429: free-tier rate limit.", undefined, 429);
+      throw new LLMError(`Gemini HTTP ${res.status}: ${detail.slice(0, 400)}`, undefined, res.status);
     }
 
     const json = (await res.json()) as {
@@ -265,8 +278,8 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[]) {
       const detail = (await res.text()).slice(0, 300);
       // Groq's free tier is capped at 8k tokens/minute org-wide, so a long
       // transcript can exceed what one request is allowed to carry.
-      if (res.status === 413) throw new LLMError(`Groq 413: conversation exceeds the free-tier tokens-per-minute cap. ${detail}`);
-      throw new LLMError(`Groq HTTP ${res.status}: ${detail}`);
+      if (res.status === 413) throw new LLMError(`Groq 413: conversation exceeds the free-tier tokens-per-minute cap. ${detail}`, undefined, 413);
+      throw new LLMError(`Groq HTTP ${res.status}: ${detail}`, undefined, res.status);
     }
 
     const json = (await res.json()) as {
@@ -286,7 +299,9 @@ function safeParse(s: string): Record<string, unknown> {
   try {
     return JSON.parse(s) as Record<string, unknown>;
   } catch {
-    return {};
+    // Surface the corruption to the tool layer instead of silently running
+    // the tool with empty (and therefore default) arguments.
+    return { _malformed_arguments: s.slice(0, 200) };
   }
 }
 

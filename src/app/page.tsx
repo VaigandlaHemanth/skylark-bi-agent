@@ -48,7 +48,11 @@ export default function Page() {
 
   useEffect(() => {
     const el = threadRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // Follow the stream only if the user is already near the bottom -
+    // never yank them down while they are reading scrollback.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [turns]);
 
   const grow = useCallback(() => {
@@ -80,7 +84,11 @@ export default function Page() {
           body: JSON.stringify({ messages: history.map(({ role, content }) => ({ role, content })) }),
         });
 
-        if (!res.ok || !res.body) throw new Error(`Server returned ${res.status}`);
+        if (!res.ok) {
+          const detail = (await res.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(detail?.error ?? `Server returned ${res.status}`);
+        }
+        if (!res.body) throw new Error("The server sent no response stream.");
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -115,7 +123,10 @@ export default function Page() {
             } else if (ev.type === "tool_result") {
               patch((t) => {
                 const steps = [...(t.steps ?? [])];
-                const last = steps.findLastIndex((s) => s.kind === "run");
+                let last = -1; // findLastIndex, minus the browser-support risk
+                for (let j = steps.length - 1; j >= 0; j--) {
+                  if (steps[j].kind === "run") { last = j; break; }
+                }
                 const failed = ev.summary?.startsWith("failed");
                 if (last >= 0) steps[last] = { ...steps[last], kind: failed ? "err" : "done", detail: ev.summary };
                 return { ...t, steps };
@@ -134,6 +145,17 @@ export default function Page() {
       } catch (err) {
         patch((t) => ({ ...t, content: `**Could not reach the agent.**\n\n${err instanceof Error ? err.message : String(err)}`, steps: [] }));
       } finally {
+        // If the stream died mid-flight (network drop, serverless timeout),
+        // close out the pulsing step chips and say so instead of hanging.
+        patch((t) =>
+          t.content
+            ? t
+            : {
+                ...t,
+                content: "The connection dropped before the answer arrived. Ask again - the boards are cached, so the retry is fast.",
+                steps: (t.steps ?? []).map((s) => (s.kind === "run" ? { ...s, kind: "err" } : s)),
+              },
+        );
         setBusy(false);
         inputRef.current?.focus();
       }
@@ -214,7 +236,9 @@ export default function Page() {
               grow();
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              // isComposing: Enter during IME composition confirms the
+              // characters - it must not send the message.
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 ask(draft);
               }
@@ -336,8 +360,14 @@ function renderMarkdown(src: string): ReactNode[] {
       continue;
     }
 
-    const para: string[] = [];
-    while (i < lines.length && lines[i].trim() && !/^#{1,6}\s/.test(lines[i]) && !/^\s*[-*•\d]/.test(lines[i]) && !isTableRow(lines[i])) {
+    // Paragraph. MUST consume at least one line no matter what it starts with —
+    // a line like "**Total:** 42" or "31 deals open" is a paragraph, and
+    // refusing it here would loop forever. Continuation stops only at real
+    // structure: a blank line, heading, list item (marker + space), or table.
+    const isStructural = (l: string) =>
+      !l.trim() || /^#{1,6}\s/.test(l) || /^\s*[-*•]\s+/.test(l) || /^\s*\d+[.)]\s+/.test(l) || isTableRow(l);
+    const para: string[] = [lines[i++]];
+    while (i < lines.length && !isStructural(lines[i])) {
       para.push(lines[i++]);
     }
     const text = para.join(" ");

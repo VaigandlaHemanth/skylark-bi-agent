@@ -26,6 +26,9 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
   const period = tf?.label ?? "all time";
   const sectorFilter = sector ? [{ field: "sector", op: "eq", value: sector }] : [];
 
+  // Warm both boards concurrently before the serial sections below.
+  await Promise.allSettled([getDataset("deals"), getDataset("work_orders")]);
+
   const brief: Record<string, unknown> = {
     period,
     sector_scope: sector ?? "all sectors",

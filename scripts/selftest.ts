@@ -230,6 +230,59 @@ check("avg ignores nulls", stats.totals.avg_value, 433);
 check("max value", stats.totals.max_value, 999);
 check("distinct statuses", stats.totals.distinct_status, 3);
 
+/* ----------------------------------------------- audit regression checks */
+
+// parseNumber: ranges and multi-number cells take the FIRST number, flagged.
+check("range takes first number", parseNumber("1,00,000 - 2,00,000").value, 100000);
+check("range is flagged", typeof parseNumber("1,00,000 - 2,00,000").note, "string");
+check("range with unit", parseNumber("5-10 lakhs").value, 500000);
+
+// parseDate: time suffixes, 2-digit month-years, and the loose fallback.
+check("slash date with time keeps day-first", parseDate("13/04/2026 10:30", "dmy").value, "2026-04-13");
+check("ambiguous slash date with time honors column order", parseDate("03/04/2026 09:00", "dmy").value, "2026-04-03");
+check("Aug-25 is Aug 2025, not 25 Aug 2001", parseDate("Aug-25").value, "2025-08-01");
+check("loose fallback rejects nonsense centuries", parseDate("Tue Aug 25 3050").value, null);
+
+// companyKey keeps distinctive words, strips only legal suffixes.
+check("Services vs Technologies stay distinct", companyKey("ABC Services") === companyKey("ABC Technologies"), false);
+check("legal suffixes still fold", companyKey("Adani Green Pvt. Ltd."), companyKey("Adani Green"));
+
+// Timeframes: FY range notation and 2-digit quarter years.
+check("FY 2025-26 range = Apr 2025 start", resolveTimeframe("FY 2025-26", aug)?.from, "2025-04-01");
+check("FY 25-26 range = Apr 2025 start", resolveTimeframe("fy 25-26", aug)?.from, "2025-04-01");
+check("bare FY26 unchanged", resolveTimeframe("FY26", aug)?.from, "2025-04-01");
+check("Q3 25 is 2025", resolveTimeframe("Q3 25", aug)?.from, "2025-07-01");
+check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01");
+
+// group_by merges case/spelling variants and labels by majority spelling.
+{
+  const vRows = [
+    row("g1", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 10, close_date: null }),
+    row("g2", { sector: "mining", status: "Open", stage: "A. Lead Generated", value: 20, close_date: null }),
+    row("g3", { sector: "MINING", status: "Open", stage: "A. Lead Generated", value: 30, close_date: null }),
+    row("g4", { sector: "Railways", status: "Open", stage: "A. Lead Generated", value: 5, close_date: null }),
+  ];
+  const vds: Dataset = { ...ds, rows: vRows, rowCount: vRows.length, distinct: {} };
+  const g = runQuery(vds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "count desc" });
+  check("case variants merge into one group", g.groups?.length, 2);
+  check("merged group aggregates all variants", (g.groups?.[0] as Record<string, unknown>).sum_value, 60);
+}
+
+// Sorting by a metric written as "fn:field", and by a text key.
+{
+  const g1 = runQuery(ds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "sum:value desc" });
+  check("colon sort key accepted", (g1.groups?.[0] as Record<string, unknown>).sector, "Renewables");
+  const g2 = runQuery(ds, { group_by: "sector", metrics: ["count"], sort: "sector asc" });
+  const labels = g2.groups?.map((g) => g.sector);
+  check("text sort is alphabetical, not a no-op", labels, [...(labels ?? [])].sort((a, b) => String(a).localeCompare(String(b))));
+}
+
+// Filtering by the monday column title uses PARSED values.
+{
+  const t = runQuery(ds, { filters: [{ field: "Masked Deal value", op: "gt", value: "150" }], metrics: ["count"] });
+  check("column-title filter hits parsed numbers", t.matched, 3);
+}
+
 /* -------------------------------------------------------------------- out */
 
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);

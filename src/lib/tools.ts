@@ -110,8 +110,35 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ];
 
+/** Free-tier models drift from the schema; coerce instead of crashing. */
+function coerceFilters(raw: unknown): Filter[] {
+  // Some models send the array JSON-encoded as a string.
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === "object")
+    .map((f) => ({
+      field: String(f.field ?? ""),
+      op: String(f.op ?? "eq"),
+      ...(f.value === undefined || f.value === null ? {} : { value: String(f.value) }),
+    }))
+    .filter((f) => f.field);
+}
+
+const BOARD_SCOPED = new Set(["query_board", "sample_rows", "data_quality", "distinct_values"]);
+
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  const board = (args.board as BoardKey) ?? "deals";
+  const board = args.board as BoardKey;
+  if (BOARD_SCOPED.has(name) && board !== "deals" && board !== "work_orders") {
+    // Refuse rather than silently defaulting - a wrong board is a wrong answer.
+    return { error: `The "board" parameter is required and must be "deals" or "work_orders" (got ${JSON.stringify(args.board)}).` };
+  }
 
   switch (name) {
     case "list_boards_and_fields":
@@ -137,15 +164,16 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
 
     case "query_board": {
       const ds = await getDataset(board);
+      const limit = Number(args.limit);
       return runQuery(ds, {
-        filters: (args.filters as Filter[]) ?? [],
-        timeframe: args.timeframe as string | undefined,
-        date_field: args.date_field as string | undefined,
-        group_by: args.group_by as string | undefined,
-        metrics: args.metrics as string[] | undefined,
-        sort: args.sort as string | undefined,
-        limit: args.limit as number | undefined,
-        return_rows: args.return_rows as boolean | undefined,
+        filters: coerceFilters(args.filters),
+        timeframe: args.timeframe == null ? undefined : String(args.timeframe),
+        date_field: args.date_field == null ? undefined : String(args.date_field),
+        group_by: args.group_by == null ? undefined : String(args.group_by),
+        metrics: Array.isArray(args.metrics) ? args.metrics.map(String) : undefined,
+        sort: args.sort == null ? undefined : String(args.sort),
+        limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        return_rows: args.return_rows === true || args.return_rows === "true",
       });
     }
 

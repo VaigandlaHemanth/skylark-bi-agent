@@ -451,24 +451,42 @@ export async function resolveBoard(key: BoardKey): Promise<BoardMeta> {
   );
 }
 
+const inflight = new Map<BoardKey, Promise<Dataset>>();
+
 export async function getDataset(key: BoardKey): Promise<Dataset> {
   const hit = dataCache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
 
-  const board = await resolveBoard(key);
-  const items = await fetchItems(board.id);
-  const data = buildDataset(key, board, items);
-  dataCache.set(key, { at: Date.now(), data });
-  return data;
+  // Concurrent callers share one fetch instead of stampeding monday.com.
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const p = (async () => {
+    const board = await resolveBoard(key);
+    const items = await fetchItems(board.id);
+    const data = buildDataset(key, board, items);
+    dataCache.set(key, { at: Date.now(), data });
+    return data;
+  })().finally(() => inflight.delete(key));
+
+  inflight.set(key, p);
+  return p;
 }
 
 export async function boardsOverview() {
   const all = await boards();
   const out: Array<Record<string, unknown>> = [];
 
-  for (const key of ["deals", "work_orders"] as BoardKey[]) {
+  // Both datasets concurrently - they are independent fetches.
+  const keys: BoardKey[] = ["deals", "work_orders"];
+  const settled = await Promise.allSettled(keys.map((k) => getDataset(k)));
+
+  for (let idx = 0; idx < keys.length; idx++) {
+    const key = keys[idx];
     try {
-      const d = await getDataset(key);
+      const s = settled[idx];
+      if (s.status === "rejected") throw s.reason;
+      const d = s.value;
       out.push({
         board_key: key,
         monday_board: d.board.name,
