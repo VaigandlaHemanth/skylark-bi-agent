@@ -12,6 +12,7 @@
  * more than the delivery side is billing.
  */
 
+import { normKey } from "./normalize";
 import { runQuery } from "./query";
 import { getDataset, type Dataset } from "./store";
 
@@ -22,7 +23,12 @@ function valuesMeaning(ds: Dataset, field: string, ...concepts: string[]): strin
   const pool = ds.distinct[field];
   if (!pool) return null;
   const wanted = concepts.map((c) => c.toLowerCase());
-  const hits = pool.map((p) => p.value).filter((v) => wanted.some((w) => v.toLowerCase().includes(w)));
+  const hits = pool
+    .map((p) => p.value)
+    // "complet" matches "Partial Completed" as readily as "Completed", so a
+    // partially delivered work order was counted as delivered. A qualifier
+    // that negates the concept excludes the value.
+    .filter((v) => wanted.some((w) => v.toLowerCase().includes(w)) && !/(partial|part |pause|struck|hold|pending|not )/i.test(v));
   return hits.length ? hits.join(",") : null;
 }
 
@@ -87,19 +93,39 @@ export async function compareBoards(dimension: CompareDimension = "sector") {
 
   rows.sort((a, b) => Number(b.open_value) + Number(b.work_order_value) - (Number(a.open_value) + Number(a.work_order_value)));
 
-  const salesOnly = rows.filter((r) => r.present_on === "deals").map((r) => r[dimension]);
-  const deliveryOnly = rows.filter((r) => r.present_on === "work_orders").map((r) => r[dimension]);
-  if (salesOnly.length) caveats.add(`Sold but never delivered in: ${salesOnly.join(", ")} — these appear on the deal board with no work orders at all.`);
-  if (deliveryOnly.length) caveats.add(`Delivered without a matching deal record in: ${deliveryOnly.join(", ")}.`);
+  // A group missing from the delivery board is not automatically a delivery
+  // gap. The work order board's sector column simply does not use "Tender" or
+  // "DSP" - those are procurement routes, and that work is recorded under an
+  // industry sector once it becomes a work order. Reporting 532M of Tender
+  // pipeline as "never delivered" contradicts what the system prompt already
+  // tells the model about those two values, so the two cases are separated.
+  const woVocab = new Set((wo.distinct[dimension] ?? []).map((v) => normKey(v.value)));
+  const salesOnly = rows.filter((r) => r.present_on === "deals").map((r) => String(r[dimension]));
+  const deliveryOnly = rows.filter((r) => r.present_on === "work_orders").map((r) => String(r[dimension]));
+
+  const gap = salesOnly.filter((v) => woVocab.has(normKey(v)));
+  const absent = salesOnly.filter((v) => !woVocab.has(normKey(v)));
+
+  const own: string[] = [];
+  if (gap.length) {
+    own.push(`Sold but not delivered in: ${gap.join(", ")} — the delivery board uses ${gap.length === 1 ? "this value" : "these values"} but holds no work orders against ${gap.length === 1 ? "it" : "them"}.`);
+  }
+  if (absent.length) {
+    own.push(
+      `${absent.join(", ")} ${absent.length === 1 ? "does" : "do"} not appear on the delivery board's ${dimension} column at all, so this is a vocabulary difference, not a delivery gap. Do not report it as work that was sold and never delivered.`,
+    );
+  }
+  if (deliveryOnly.length) own.push(`Delivered without a matching deal record in: ${deliveryOnly.join(", ")}.`);
 
   return {
     dimension,
+    delivered_means: `Counted as delivered: ${done}. Partial completions are not included.`,
     join_basis:
       dimension === "sector"
         ? "Sector, which matches on all six values the work order board uses."
         : "Owner code, which matches on six of seven values across the two boards.",
     rows,
-    data_caveats: [...caveats].slice(0, 8),
+    data_caveats: [...own, ...[...caveats].filter((c) => !own.includes(c))].slice(0, 8),
     instruction_to_agent:
       "This is a group-level comparison, not a row-level join - the boards share no key that would support one. Say what it shows: where open pipeline is large against little delivery, where delivery is running with no pipeline behind it, and where billing lags the order book. Do not multiply these figures together.",
   };

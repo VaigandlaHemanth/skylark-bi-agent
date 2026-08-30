@@ -543,13 +543,19 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
       .map((d) => (d.fn === "count" ? "share_of_count_pct" : `share_of_${d.key}_pct`))
       .sort((a, b) => (a === "share_of_count_pct" ? 1 : 0) - (b === "share_of_count_pct" ? 1 : 0));
 
-    if (groups.length >= 3) {
+    // A plain "group_by X, count" with no limit IS the distribution the user
+    // asked for. Telling them the biggest group is big is not a data-quality
+    // caveat, and the enforced path pushes it into the answer as one. The
+    // caveat exists for a HEADLINE TOTAL one group carries - a value sum.
+    const askedForDistribution = !spec.limit && defs.every((d) => d.fn === "count");
+
+    if (groups.length >= 3 && !askedForDistribution) {
       for (const key of shareKeys) {
         const top = [...groups].sort((a, b) => Number(b[key] ?? 0) - Number(a[key] ?? 0))[0];
         const share = Number(top?.[key] ?? 0);
         if (share < 50) continue;
         caveats.push(
-          `"${top[spec.group_by!]}" alone is ${share}% of the total by ${key.replace(/^share_of_|_pct$/g, "").replace(/_/g, " ")} ${top.count === undefined ? "" : ` across ${top.count} row(s)`}; the headline figure is concentrated in one group rather than typical of the whole.`,
+          `"${top[spec.group_by!]}" alone is ${share}% of the total by ${key.replace(/^share_of_|_pct$/g, "").replace(/_/g, " ")}${top.count === undefined ? "" : ` across ${top.count} row(s)`}; the headline figure is concentrated in one group rather than typical of the whole.`,
         );
         break; // one is enough; more is noise
       }

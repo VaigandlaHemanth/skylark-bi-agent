@@ -86,31 +86,37 @@ The five misses are empty columns; they stay queryable by exact title.
 
 ## Setup
 
-**1. monday.com** — free account, then **avatar → Developers → My access tokens**. Create the boards either way:
-
-```bash
-npx tsx scripts/import-to-monday.mts <folder-with-the-two-csvs>   # --dry to preview
-```
-
-Or **Add → Import data → Excel** per file. *The work order sheet has a blank first row — pick row 2 as the header.*
-
-Values upload verbatim; the messy data is the point. This is the only script that writes to monday.
-
-**2. Model key** — free, no card: [aistudio.google.com/apikey](https://aistudio.google.com/apikey). `GROQ_API_KEY` and `ANTHROPIC_API_KEY` also work.
-
-**3. Run**
+**1. Keys** — a monday.com account, then **avatar → Developers → My access tokens**. A model key is free with no card: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (`GROQ_API_KEY` and `ANTHROPIC_API_KEY` also work).
 
 ```bash
 npm install
-npm run dev
 ```
 
-`.env.local`:
+`.env.local` — needed before step 2, because the import script reads the same token:
 ```
 GEMINI_API_KEY=...
 MONDAY_API_TOKEN=...
 MONDAY_DEALS_BOARD_ID=          # optional, auto-detected by name
 MONDAY_WORK_ORDERS_BOARD_ID=
+```
+
+**2. Boards** — either way:
+
+```bash
+npx tsx scripts/import-to-monday.mts <folder-with-the-two-csvs>   # --dry to preview
+```
+
+Or **Add → Import data → Excel** per file. Two things matter if you import by hand:
+
+- *The work order sheet has a blank first row — pick row 2 as the header.*
+- Name the boards so auto-detection finds them: the deal board's name must contain **deal**, **funnel**, **pipeline**, **sales**, **lead** or **crm**; the work order board's must contain **work order**, **wo tracker**, **execution**, **delivery**, **operations** or **project**. Any other name works too — set the two board-id variables instead.
+
+Values upload verbatim; the messy data is the point. This is the only script that writes to monday.
+
+**3. Run**
+
+```bash
+npm run dev
 ```
 
 `GET /api/health` reports whether the model and both boards are reachable; the UI shows a setup banner listing anything missing.

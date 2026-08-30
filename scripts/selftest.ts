@@ -683,6 +683,47 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   });
   check("a shared dimension still scopes the pivot", sectorTop.includes("How is delivery tracking for Renewables?"), true);
 
+// A bolded figure is not an offered reading. phrase() split it on the
+  // thousands comma and minted the chip "1 and 240".
+  const numeric = deriveFollowUps({
+    ...base,
+    answer: "We have **1,240** deals. Did you mean open or closed?",
+    steps: [{ name: "query_board", trace: { board: "deals" } }],
+  });
+  check("a bolded figure never becomes a chip", numeric.some((q) => q.includes("1 and 240") || q === "1,240"), false);
+
+  // A single bolded word answers nothing either.
+  const oneWord = deriveFollowUps({
+    ...base,
+    answer: "Do you mean **revenue** or **billings**?",
+    steps: [{ name: "query_board", trace: { board: "deals" } }],
+  });
+  check("single-word options are rejected", oneWord.includes("Revenue"), false);
+
+  // Real multi-word readings still come through.
+  const good = deriveFollowUps({
+    ...base,
+    answer: "Do you mean **won deal value** or **total amount billed**?",
+    steps: [{ name: "query_board", trace: { board: "deals" } }],
+  });
+  check("multi-word readings are offered", good, ["Won deal value", "Total amount billed"]);
+
+  // A timeframe the engine could not read was never applied.
+  const badTf = deriveFollowUps({
+    ...base,
+    answer: "Here you go.",
+    steps: [{ name: "query_board", trace: { board: "deals", timeframe: "since the monsoon",
+      caveats: ['Could not interpret the timeframe "since the monsoon"; no date filter was applied.'] } }],
+  });
+  check("no period comparison on an uninterpreted timeframe", badTf.some((q) => q.includes("compare with the period before")), false);
+
+  const goodTf = deriveFollowUps({
+    ...base,
+    answer: "Here you go.",
+    steps: [{ name: "query_board", trace: { board: "deals", timeframe: "FY26" } }],
+  });
+  check("a resolved timeframe still offers the comparison", goodTf.some((q) => q.includes("How does FY26 compare")), true);
+
   // An answer that ends in a question wants an answer, not a new topic.
   const clarify = deriveFollowUps({
     ...base,

@@ -17,7 +17,12 @@ function valuesMeaning(ds: Dataset, field: string, ...concepts: string[]): strin
   const pool = ds.distinct[field];
   if (!pool) return null;
   const wanted = concepts.map((c) => c.toLowerCase());
-  const hits = pool.map((p) => p.value).filter((v) => wanted.some((w) => v.toLowerCase().includes(w)));
+  const hits = pool
+    .map((p) => p.value)
+    // "complet" matches "Partial Completed" as readily as "Completed", so a
+    // partially delivered work order was counted as delivered. A qualifier
+    // that negates the concept excludes the value.
+    .filter((v) => wanted.some((w) => v.toLowerCase().includes(w)) && !/(partial|part |pause|struck|hold|pending|not )/i.test(v));
   return hits.length ? hits.join(",") : null;
 }
 

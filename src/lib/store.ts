@@ -462,11 +462,30 @@ export async function getDataset(key: BoardKey): Promise<Dataset> {
   if (pending) return pending;
 
   const p = (async () => {
-    const board = await resolveBoard(key);
-    const items = await fetchItems(board.id);
-    const data = buildDataset(key, board, items);
-    dataCache.set(key, { at: Date.now(), data });
-    return data;
+    try {
+      const board = await resolveBoard(key);
+      const items = await fetchItems(board.id);
+      const data = buildDataset(key, board, items);
+      dataCache.set(key, { at: Date.now(), data });
+      return data;
+    } catch (err) {
+      // A refresh that fails does not mean there is nothing to answer with.
+      // Throwing here killed a whole answer on a transient 429 while a copy of
+      // the board minutes old sat in memory. Serve it, and say how old it is
+      // so the staleness travels with the figures rather than being hidden.
+      if (!hit) throw err;
+      const mins = Math.round((Date.now() - hit.at) / 60000);
+      return {
+        ...hit.data,
+        quality: {
+          ...hit.data.quality,
+          warnings: [
+            `monday.com could not be re-read just now (${err instanceof Error ? err.message : String(err)}), so these figures come from a copy taken ${mins === 0 ? "under a minute" : `about ${mins} minute${mins === 1 ? "" : "s"}`} ago. Say so in the answer.`,
+            ...hit.data.quality.warnings,
+          ],
+        },
+      };
+    }
   })().finally(() => inflight.delete(key));
 
   inflight.set(key, p);

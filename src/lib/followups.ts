@@ -110,9 +110,15 @@ export function deriveFollowUps(opts: {
   };
 
   // An answer that ends by asking something needs an answer, not a new topic.
+  // The bold spans are the offered readings - but only the ones that read as a
+  // choice. phrase() must not be used here: it splits on commas to expand an
+  // `in` list, so a bolded figure like "1,240" came back as the chip
+  // "1 and 240", and a bolded single word made a chip that answers nothing.
   if (/\?\s*$/.test(answer.trim())) {
-    const opts2 = answer.match(/\*\*([^*]{3,40})\*\*/g)?.map((s) => s.replace(/\*/g, "")) ?? [];
-    for (const o of opts2.slice(0, 2)) add(phrase(o));
+    const choices = (answer.match(/\*\*([^*]{3,40})\*\*/g) ?? [])
+      .map((m) => m.replace(/\*/g, "").trim())
+      .filter((o) => o.split(/\s+/).length >= 2 && /[a-z]{3}/i.test(o) && !/^[\d,.\s%₹$€£]+$/.test(o));
+    for (const o of choices.slice(0, 2)) add(o.replace(/^[a-z]/, (c) => c.toUpperCase()));
     if (out.length) return out;
   }
 
@@ -157,7 +163,8 @@ export function deriveFollowUps(opts: {
   }
 
   // 6. A period figure invites the comparison against the one before it.
-  if (timeframe) add(`How does ${timeframe} compare with the period before it?`);
+  const timeframeFailed = caveats.some((c) => /Could not interpret the timeframe|no usable date column/i.test(c));
+  if (timeframe && !timeframeFailed) add(`How does ${timeframe} compare with the period before it?`);
 
   // 7. A brief is a starting point for the risks inside it.
   if (tools.has("leadership_brief")) add("What are the biggest risks in that?");
