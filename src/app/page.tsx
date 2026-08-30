@@ -347,7 +347,13 @@ export default function Page() {
             ? `Verification: all ${answer.grounding.checked} figures traced back to a board query.`
             : `Verification: ${answer.grounding.grounded} of ${answer.grounding.checked} figures traced back to a board query; the rest could not be verified.`
           : null,
-        answer.steps?.length ? `Queries run: ${answer.steps.filter((s) => s.kind !== "run").map((s) => s.label).join(", ")}.` : null,
+        // Only tool steps carry a name; status lines like "Switched to
+        // gemini/..." are internal plumbing and have no place in a document
+        // going to a board.
+        (() => {
+          const queries = (answer.steps ?? []).filter((s) => s.kind !== "run" && s.name).map((s) => s.label);
+          return queries.length ? `Queries run: ${queries.join(", ")}.` : null;
+        })(),
       ].filter(Boolean);
 
       const NL = String.fromCharCode(10);

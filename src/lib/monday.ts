@@ -32,9 +32,19 @@ function token(): string {
 
 async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
   let lastErr: unknown;
+  let rateLimited = false;
+  // monday says how long to wait on a 429. Guessing instead means retrying
+  // into the same closed window and burning all three attempts in 3.6s.
+  let waitMs = 0;
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+    if (attempt > 0) {
+      // Jitter, because several serverless instances rate-limited together
+      // would otherwise retry in lockstep and trip the limit again.
+      const backoff = waitMs || 600 * 2 ** attempt;
+      await new Promise((r) => setTimeout(r, backoff + Math.floor(Math.random() * 250)));
+      waitMs = 0;
+    }
     try {
       const res = await fetch(ENDPOINT, {
         method: "POST",
@@ -51,6 +61,12 @@ async function gql<T>(query: string, variables: Record<string, unknown> = {}): P
         throw new MondayError("monday.com rejected the API token (401/403).", "Check MONDAY_API_TOKEN and that the token's user can see both boards.");
       }
       if (res.status === 429 || res.status >= 500) {
+        if (res.status === 429) {
+          rateLimited = true;
+          // Retry-After is seconds; honour it, but not past the request budget.
+          const after = Number(res.headers.get("Retry-After"));
+          if (Number.isFinite(after) && after > 0) waitMs = Math.min(after * 1000, 8000);
+        }
         lastErr = new MondayError(`monday.com returned HTTP ${res.status}.`);
         continue; // retryable
       }
@@ -68,6 +84,12 @@ async function gql<T>(query: string, variables: Record<string, unknown> = {}): P
     }
   }
 
+  if (rateLimited) {
+    throw new MondayError(
+      "monday.com rate-limited this request (HTTP 429) and was still limiting after 3 attempts.",
+      "The boards are reachable and the token is valid - the account's API quota is momentarily exhausted. Wait about a minute and ask again.",
+    );
+  }
   throw lastErr instanceof Error
     ? new MondayError(`monday.com is unreachable after 3 attempts: ${lastErr.message}`)
     : new MondayError("monday.com is unreachable after 3 attempts.");

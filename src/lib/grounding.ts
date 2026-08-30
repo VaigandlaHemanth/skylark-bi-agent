@@ -155,9 +155,22 @@ export function materialCaveats(caveats: string[]): string[] {
 /** Loose check that the prose already says what a caveat says. */
 function alreadySaid(answer: string, caveat: string): boolean {
   const a = answer.toLowerCase();
-  const numbers = caveat.match(/\d[\d,.]*/g) ?? [];
-  if (numbers.some((n) => a.includes(n.toLowerCase()))) return true;
-  return /blank|missing|excluded|incomplete|not populated|unfilled|only .{0,12}filled|caveat|concentrat|not unique/.test(a);
+
+  // A caveat about concentration is not answered by mentioning blanks, and vice
+  // versa, so each kind is checked against language that actually conveys it.
+  if (/concentrated in one group/i.test(caveat)) return /concentrat|dominat|skew|driven by|accounts for/.test(a);
+  if (/not unique/i.test(caveat)) return /not unique|repeat|duplicate|merge/.test(a);
+  if (/could not be read/i.test(caveat)) return /could not be read|unavailable|unable|failed/.test(a);
+  if (/do not add to 100/i.test(caveat)) return /do not add|not add to 100|top \d+/.test(a);
+
+  // What is left is the missing-data family. Any wording that tells the reader
+  // the figure rests on incomplete data counts - the point is that the reader
+  // is warned, not that the engine's sentence is quoted.
+  //
+  // Matching a bare digit run does NOT count. The caveat carries the row totals
+  // as well as the fill rate, so "344 deals" in an answer about 344 deals used
+  // to read as a disclosure of a 48% fill rate and suppressed the warning.
+  return /blank|missing|excluded|exclude|incomplete|not populated|unfilled|sparse|partial|only .{0,12}filled/.test(a);
 }
 
 /**
@@ -169,9 +182,15 @@ function alreadySaid(answer: string, caveat: string): boolean {
 export function appendMissingCaveats(answer: string, caveats: string[]): string {
   const material = materialCaveats(caveats);
   if (!material.length) return answer;
-  if (material.some((c) => alreadySaid(answer, c))) return answer;
+
+  // Per caveat, not across them. Disclosing one material caveat used to excuse
+  // every other: an answer that noted a concentration but hid a 48% fill rate
+  // was shipped untouched, which is the omission this whole function exists to
+  // prevent.
+  const missing = material.filter((c) => !alreadySaid(answer, c));
+  if (!missing.length) return answer;
 
   const NL = String.fromCharCode(10);
-  const note = material.slice(0, 2).join(" ");
+  const note = missing.slice(0, 2).join(" ");
   return `${answer}${NL}${NL}*${note}*`;
 }

@@ -459,7 +459,30 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   check("an answer that already says it is untouched", covered.includes("excluded from sums"), false);
   const worded = appendMissingCaveats("Total is X, but many values are missing.", sparse);
   check("paraphrase counts as saying it", worded.includes("excluded from sums"), false);
-  check("nothing is added when nothing is material", appendMissingCaveats("All good.", noise), "All good.");
+  // A number that happens to appear in both the caveat and the answer is not a
+  // disclosure. "344 deals" used to satisfy the 48%-filled caveat because the
+  // caveat also carries 344, which silently suppressed the warning.
+  const bareNumber = appendMissingCaveats("We have 344 deals worth 2,305,518,040.91 in total.", sparse);
+  check("a shared digit run is not a disclosure", bareNumber.includes("excluded from sums"), true);
+
+  // One material caveat disclosed must not excuse a different one.
+  const twoKinds = [
+    '"Tender" alone is 77.3% of the total by sum value; the headline figure is concentrated in one group rather than typical of the whole.',
+    '"Masked Deal value" (value) is only 48% filled - 179 of 344 rows are blank.',
+  ];
+  const oneSaid = appendMissingCaveats("Tender dominates the total, accounts for most of the value.", twoKinds);
+  check("disclosing concentration does not excuse the fill rate", oneSaid.includes("48% filled"), true);
+  check("and the disclosed one is not repeated", oneSaid.includes("concentrated in one group"), false);
+
+  // Saying both leaves the answer alone.
+  const bothSaid = appendMissingCaveats("Tender dominates the total; the value column is only partly populated, so blanks are excluded.", twoKinds);
+  check("saying both leaves the answer untouched", bothSaid.includes("*"), false);
+
+  // Concentration language does not satisfy a missing-data caveat.
+  const wrongKind = appendMissingCaveats("Tender is concentrated in one group.", sparse);
+  check("concentration wording does not cover missing data", wrongKind.includes("excluded from sums"), true);
+
+    check("nothing is added when nothing is material", appendMissingCaveats("All good.", noise), "All good.");
 }
 
 /* ------------------------------------------------------------- follow-ups */
@@ -627,6 +650,25 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   });
   check("a work-order answer drills into work orders", noun("work_orders").includes("Which are the largest Completed work orders?"), true);
   check("a deals answer drills into deals", noun("deals").includes("Which are the largest Completed deals?"), true);
+
+  // Only sector and owner exist on both boards. A deals answer grouped by
+  // status must not offer "how is delivery tracking for Won" — work orders
+  // have no such dimension, so the question is unanswerable.
+  const statusTop = deriveFollowUps({
+    ...base,
+    answer: "Win rate is 56.5%.",
+    steps: [{ name: "query_board", trace: { board: "deals", groupBy: "status", top: { label: "Won", metric: "count", value: 165 } } }],
+  });
+  check("no pivot is scoped by a non-shared dimension", statusTop.some((q) => q.includes("delivery tracking for Won")), false);
+  check("it falls back to the unscoped pivot", statusTop.includes("How does that compare with what we are delivering?"), true);
+
+  // Grouping by a shared dimension still scopes the pivot.
+  const sectorTop = deriveFollowUps({
+    ...base,
+    answer: "Renewables leads.",
+    steps: [{ name: "query_board", trace: { board: "deals", groupBy: "sector", top: { label: "Renewables", metric: "count", value: 90 } } }],
+  });
+  check("a shared dimension still scopes the pivot", sectorTop.includes("How is delivery tracking for Renewables?"), true);
 
   // An answer that ends in a question wants an answer, not a new topic.
   const clarify = deriveFollowUps({

@@ -70,9 +70,15 @@ export function deriveFollowUps(opts: {
   const resolved = traces.flatMap((t) => t.resolved ?? []);
   const timeframe = traces.find((t) => t.timeframe)?.timeframe;
 
-  // The subject the last answer was about: an explicit filter beats the group
-  // that happened to come top.
-  const subject = filters.find((f) => f.field === "sector" || f.field === "client" || f.field === "owner")?.value ?? top?.label;
+  // Only sector and owner exist on both boards - compare.ts refuses anything
+  // else because client codes do not overlap. Scoping the cross-board pivot by
+  // any other dimension asks a question the boards cannot answer: a deal
+  // grouped by status yields "how is delivery tracking for Won", which is not
+  // a thing work orders have.
+  const SHARED = new Set(["sector", "owner"]);
+  const pivotSubject =
+    filters.find((f) => SHARED.has(f.field))?.value ??
+    (top && SHARED.has(traces.find((t) => t.top)?.groupBy ?? "") ? top.label : undefined);
 
   // A suggestion is only worth making the first time its evidence appears.
   // Without this the pivot bounces between the two boards on the same subject,
@@ -114,12 +120,12 @@ export function deriveFollowUps(opts: {
   if (boards.size === 1) {
     const only = [...boards][0];
     const other = only === "deals" ? "work_orders" : "deals";
-    const covered = subject ? seenPair.has(`${other}|${subject}`) : prior.some((t) => t.board === other);
+    const covered = pivotSubject ? seenPair.has(`${other}|${pivotSubject}`) : prior.some((t) => t.board === other);
     if (!covered) {
       if (only === "deals") {
-        add(subject ? `How is delivery tracking for ${phrase(subject)}?` : "How does that compare with what we are delivering?");
+        add(pivotSubject ? `How is delivery tracking for ${phrase(pivotSubject)}?` : "How does that compare with what we are delivering?");
       } else if (only === "work_orders") {
-        add(subject ? `What does the pipeline look like for ${phrase(subject)}?` : "How does that compare with what we are selling?");
+        add(pivotSubject ? `What does the pipeline look like for ${phrase(pivotSubject)}?` : "How does that compare with what we are selling?");
       }
     }
   }
