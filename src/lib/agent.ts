@@ -1,6 +1,6 @@
 /** The agent loop: question -> tool calls -> grounded answer. */
 
-import { complete, LLMError, providerInfo, type ToolCall, type Turn } from "./llm";
+import { complete, LLMError, providerInfo, type Completion, type Turn } from "./llm";
 import { MondayError } from "./monday";
 import { getDataset, type BoardKey } from "./store";
 import { executeTool, TOOL_SPECS } from "./tools";
@@ -74,6 +74,30 @@ async function schemaSummary(): Promise<string> {
   return lines.join("\n") || "No boards were readable.";
 }
 
+/**
+ * Keep the transcript small. The fallback provider is capped at 8k tokens per
+ * minute, so an un-trimmed conversation would be rejected outright the moment
+ * the primary provider rate-limits — exactly when the fallback is needed.
+ */
+const TOOL_RESULT_CAP = 12_000;
+const TRANSCRIPT_CAP = 30_000;
+const KEEP_FULL = 2;
+
+function compact(turns: Turn[]): void {
+  const size = () => turns.reduce((n, t) => n + (t.role === "tool" ? t.content.length : t.content?.length ?? 0), 0);
+  if (size() <= TRANSCRIPT_CAP) return;
+
+  const toolIndexes = turns.flatMap((t, i) => (t.role === "tool" ? [i] : []));
+  // Squeeze the oldest results first; the newest ones are what the model is
+  // actually reasoning over.
+  for (const i of toolIndexes.slice(0, Math.max(0, toolIndexes.length - KEEP_FULL))) {
+    const turn = turns[i];
+    if (turn.role !== "tool" || turn.content.length <= 400) continue;
+    turn.content = `${turn.content.slice(0, 400)}... [earlier result trimmed to keep the conversation within the model's limit; call the tool again if you need the detail]`;
+    if (size() <= TRANSCRIPT_CAP) return;
+  }
+}
+
 function summarise(result: unknown): string {
   const r = result as Record<string, any>;
   if (r?.matched !== undefined) {
@@ -106,11 +130,19 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
     m.role === "user" ? { role: "user" as const, content: m.content } : { role: "assistant" as const, content: m.content, toolCalls: [] },
   );
 
+  let lastProvider = `${provider}/${model}`;
+
   for (let step = 0; step < MAX_STEPS; step++) {
-    let reply: { text: string; toolCalls: ToolCall[] };
+    let reply: Completion;
     try {
-      yield { type: "status", text: step === 0 ? `Thinking (${provider}/${model})` : "Interpreting results" };
+      yield { type: "status", text: step === 0 ? `Thinking (${lastProvider})` : "Interpreting results" };
       reply = await complete(system, turns, TOOL_SPECS);
+      const used = `${reply.provider}/${reply.model}`;
+      if (used !== lastProvider) {
+        // A provider went down mid-conversation and the chain rerouted.
+        yield { type: "status", text: `Switched to ${used}` };
+        lastProvider = used;
+      }
     } catch (err) {
       if (err instanceof LLMError) yield { type: "error", text: err.message, hint: err.hint };
       else yield { type: "error", text: err instanceof Error ? err.message : String(err) };
@@ -142,8 +174,11 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
       }
 
       let content = JSON.stringify(payload);
-      if (content.length > 60_000) content = `${content.slice(0, 60_000)}... [truncated - narrow the query with filters or a limit]`;
+      if (content.length > TOOL_RESULT_CAP) {
+        content = `${content.slice(0, TOOL_RESULT_CAP)}... [truncated - narrow the query with filters or a limit]`;
+      }
       turns.push({ role: "tool", callId: call.id, name: call.name, content });
+      compact(turns);
     }
   }
 

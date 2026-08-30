@@ -63,9 +63,18 @@ console.log(`Loaded ${deals.data.length} deal rows (${deals.header.length} cols)
 /* ------------------------------------------------------- stub monday.com */
 
 process.env.MONDAY_API_TOKEN = "local";
-process.env.GEMINI_API_KEY = "local";
 process.env.MONDAY_DEALS_BOARD_ID = "";
 process.env.MONDAY_WORK_ORDERS_BOARD_ID = "";
+
+// Pick up a real model key from .env.local so the agent loop can be exercised
+// against this data for real. Falls back to a stub when none is present.
+const envFile = fs.existsSync(".env.local") ? fs.readFileSync(".env.local", "utf8") : "";
+for (const line of envFile.split(/\r?\n/)) {
+  const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.+?)\s*$/);
+  if (m && m[2]) process.env[m[1]] ??= m[2];
+}
+const LIVE = !!(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.ANTHROPIC_API_KEY);
+process.env.GEMINI_API_KEY ??= "local";
 
 const cols = (header: string[], prefix: string) =>
   header.map((title, i) => ({ id: `${prefix}${i}`, title: title || `Column ${i + 1}`, type: "text" }));
@@ -190,3 +199,39 @@ console.log("\n▸ LEADERSHIP BRIEF (FY26)");
 console.log(JSON.stringify({ period: brief.period, pipeline: { open_deals: brief.pipeline?.open_deals, open_value: brief.pipeline?.open_value }, conversion: brief.conversion, delivery: { active: brief.delivery?.active_work_orders, completed: brief.delivery?.completed_in_window }, cash: { ...brief.cash, top_receivable_accounts: brief.cash?.top_receivable_accounts?.slice(0, 3) }, slipping: brief.slipping_deals?.count, overdue: brief.overdue_delivery?.count }, null, 2));
 console.log("\ncaveats:");
 for (const c of brief.data_caveats) console.log(`   ~ ${c}`);
+
+
+/* ------------------------------------------------------- live agent (optional) */
+
+if (LIVE) {
+  const { runAgent } = await import("../src/lib/agent");
+  const { providerInfo } = await import("../src/lib/llm");
+  const info = providerInfo();
+  console.log(`
+${"=".repeat(94)}
+LIVE AGENT via ${info.provider}/${info.model}
+${"=".repeat(94)}`);
+
+  const QUESTIONS = process.argv.slice(3).length
+    ? process.argv.slice(3)
+    : [
+        "How's our pipeline looking for the energy sector?",
+        "What's our win rate, and where are we losing?",
+        "How much is sitting in receivables, and with whom?",
+      ];
+
+  const NL = String.fromCharCode(10);
+
+  for (const q of QUESTIONS) {
+    console.log(`${NL}▸ ${q}`);
+    for await (const ev of runAgent([{ role: "user", content: q }])) {
+      if (ev.type === "status") console.log(`   · ${ev.text}`);
+      if (ev.type === "tool") console.log(`   → ${ev.name} ${JSON.stringify(ev.args).slice(0, 170)}`);
+      if (ev.type === "tool_result") console.log(`   ← ${ev.summary}`);
+      if (ev.type === "answer") console.log(NL + ev.text.split(NL).map((l) => `   ${l}`).join(NL) + NL);
+      if (ev.type === "error") console.log(`   ! ${ev.text}${ev.hint ? ` (${ev.hint})` : ""}`);
+    }
+  }
+} else {
+  console.log(`${String.fromCharCode(10)}(no model key found in .env.local - skipped the live agent run)`);
+}

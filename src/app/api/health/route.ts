@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 /** Setup check: is the model configured, and can we actually read both boards? */
 export async function GET() {
-  const llm = providerInfo();
+  const llm = providerInfo(); // includes the fallback chain
   const monday = { tokenSet: !!process.env.MONDAY_API_TOKEN } as Record<string, unknown>;
 
   if (monday.tokenSet) {

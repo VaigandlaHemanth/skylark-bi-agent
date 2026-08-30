@@ -23,7 +23,13 @@ export type JSONSchema = {
 };
 
 export type ToolSpec = { name: string; description: string; parameters: JSONSchema };
-export type ToolCall = { id: string; name: string; args: Record<string, unknown> };
+export type ToolCall = {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  /** Provider-specific data that must be echoed back verbatim (Gemini 3 thought signatures). */
+  signature?: string;
+};
 
 export type Turn =
   | { role: "user"; content: string }
@@ -39,58 +45,93 @@ export class LLMError extends Error {
   }
 }
 
-export function providerInfo(): { provider: Provider | null; model: string; configured: boolean } {
-  const forced = process.env.LLM_PROVIDER as Provider | undefined;
-  const has = {
-    gemini: !!process.env.GEMINI_API_KEY,
-    groq: !!process.env.GROQ_API_KEY,
-    anthropic: !!process.env.ANTHROPIC_API_KEY,
-  };
-  const provider: Provider | null =
-    forced && has[forced] ? forced : has.gemini ? "gemini" : has.groq ? "groq" : has.anthropic ? "anthropic" : null;
-
-  const model =
-    provider === "gemini"
-      ? process.env.GEMINI_MODEL || "gemini-2.5-flash"
-      : provider === "groq"
-        ? process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
-        : provider === "anthropic"
-          ? process.env.ANTHROPIC_MODEL || "claude-opus-5"
-          : "-";
-
-  return { provider, model, configured: !!provider };
+function modelFor(p: Provider): string {
+  if (p === "gemini") return process.env.GEMINI_MODEL || "gemini-3.6-flash";
+  if (p === "groq") return process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  return process.env.ANTHROPIC_MODEL || "claude-opus-5";
 }
 
-export async function complete(
-  system: string,
-  turns: Turn[],
-  tools: ToolSpec[],
-): Promise<{ text: string; toolCalls: ToolCall[] }> {
-  const { provider } = providerInfo();
-  if (!provider) {
+/**
+ * Every configured provider, in the order they will be tried. Free tiers go
+ * down (Gemini returned 503 "high demand" during development), so the agent
+ * falls through to the next one rather than failing the user's question.
+ * LLM_PROVIDER, when set, is moved to the front rather than made exclusive.
+ */
+export function providerChain(): Array<{ provider: Provider; model: string }> {
+  const available: Provider[] = [];
+  if (process.env.GEMINI_API_KEY) available.push("gemini");
+  if (process.env.GROQ_API_KEY) available.push("groq");
+  if (process.env.ANTHROPIC_API_KEY) available.push("anthropic");
+
+  const preferred = process.env.LLM_PROVIDER as Provider | undefined;
+  const ordered = preferred && available.includes(preferred) ? [preferred, ...available.filter((p) => p !== preferred)] : available;
+
+  return ordered.map((provider) => ({ provider, model: modelFor(provider) }));
+}
+
+export function providerInfo(): { provider: Provider | null; model: string; configured: boolean; fallbacks: string[] } {
+  const chain = providerChain();
+  return {
+    provider: chain[0]?.provider ?? null,
+    model: chain[0]?.model ?? "-",
+    configured: chain.length > 0,
+    fallbacks: chain.slice(1).map((c) => `${c.provider}/${c.model}`),
+  };
+}
+
+export type Completion = { text: string; toolCalls: ToolCall[]; provider: Provider; model: string };
+
+export async function complete(system: string, turns: Turn[], tools: ToolSpec[]): Promise<Completion> {
+  const chain = providerChain();
+  if (!chain.length) {
     throw new LLMError(
       "No model provider is configured on the server.",
       "Set GEMINI_API_KEY (free at aistudio.google.com/apikey), GROQ_API_KEY, or ANTHROPIC_API_KEY.",
     );
   }
-  if (provider === "gemini") return gemini(system, turns, tools);
-  if (provider === "groq") return groq(system, turns, tools);
-  return anthropic(system, turns, tools);
+
+  const failures: string[] = [];
+
+  for (const { provider, model } of chain) {
+    try {
+      const run = provider === "gemini" ? gemini : provider === "groq" ? groq : anthropic;
+      const result = await run(system, turns, tools);
+      // An empty turn with no tool call is a dead end; let the next provider try.
+      if (!result.text && !result.toolCalls.length && chain.length > 1) {
+        throw new LLMError(`${provider} returned an empty response`);
+      }
+      return { ...result, provider, model };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push(`${provider}/${model}: ${message.slice(0, 160)}`);
+      console.warn(`[llm] ${provider} failed, trying next provider — ${message.slice(0, 200)}`);
+    }
+  }
+
+  throw new LLMError(
+    `Every configured model provider failed. ${failures.join(" | ")}`,
+    "Free tiers rate-limit and occasionally return 503. Wait a moment and ask again, or add another provider key.",
+  );
 }
 
 /* ----------------------------------------------------------------- helpers */
 
+/**
+ * Retry only what a retry can fix. A rate limit or an over-size request will not
+ * clear in two seconds, and burning three backoffs on it only delays the
+ * failover to a provider that is free right now.
+ */
+const NOT_WORTH_RETRYING = /\b(400|401|403|404|413|429)\b/;
+
 async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   let last: unknown;
   for (let i = 0; i < 3; i++) {
-    if (i) await new Promise((r) => setTimeout(r, 800 * 2 ** i));
+    if (i) await new Promise((r) => setTimeout(r, 700 * 2 ** i));
     try {
       return await fn();
     } catch (err) {
       last = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      // 4xx other than rate limiting will not fix themselves.
-      if (/\b(400|401|403|404)\b/.test(msg)) throw err;
+      if (NOT_WORTH_RETRYING.test(err instanceof Error ? err.message : String(err))) throw err;
     }
   }
   throw new LLMError(`${label} failed after 3 attempts: ${last instanceof Error ? last.message : String(last)}`);
@@ -116,7 +157,7 @@ function toGeminiSchema(s: JSONSchema): Record<string, unknown> {
 
 async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
   const key = process.env.GEMINI_API_KEY!;
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
   const contents: Array<Record<string, unknown>> = [];
   for (const t of turns) {
@@ -125,7 +166,12 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
     } else if (t.role === "assistant") {
       const parts: Array<Record<string, unknown>> = [];
       if (t.content) parts.push({ text: t.content });
-      for (const c of t.toolCalls) parts.push({ functionCall: { name: c.name, args: c.args } });
+      for (const c of t.toolCalls) {
+        parts.push({
+          functionCall: { name: c.name, args: c.args },
+          ...(c.signature ? { thoughtSignature: c.signature } : {}),
+        });
+      }
       if (parts.length) contents.push({ role: "model", parts });
     } else {
       contents.push({
@@ -145,10 +191,13 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
   };
 
   return withRetry("Gemini", async () => {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-    );
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      // Header, not a query param: newer "auth keys" (AQ....) require it, and a
+      // credential must never travel in a URL where it can be logged.
+      headers: { "Content-Type": "application/json", "X-goog-api-key": key },
+      body: JSON.stringify(body),
+    });
 
     if (!res.ok) {
       const detail = await res.text();
@@ -157,7 +206,10 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
     }
 
     const json = (await res.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args: Record<string, unknown> } }> }; finishReason?: string }>;
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string; thoughtSignature?: string; functionCall?: { name: string; args: Record<string, unknown> } }> };
+        finishReason?: string;
+      }>;
       promptFeedback?: { blockReason?: string };
     };
 
@@ -168,7 +220,9 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[]) {
     const toolCalls: ToolCall[] = [];
     for (const p of parts) {
       if (p.text) text += p.text;
-      if (p.functionCall) toolCalls.push({ id: nextId(), name: p.functionCall.name, args: p.functionCall.args ?? {} });
+      if (p.functionCall) {
+        toolCalls.push({ id: nextId(), name: p.functionCall.name, args: p.functionCall.args ?? {}, signature: p.thoughtSignature });
+      }
     }
     return { text: text.trim(), toolCalls };
   });
@@ -207,7 +261,13 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[]) {
       }),
     });
 
-    if (!res.ok) throw new LLMError(`Groq HTTP ${res.status}: ${(await res.text()).slice(0, 400)}`);
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      // Groq's free tier is capped at 8k tokens/minute org-wide, so a long
+      // transcript can exceed what one request is allowed to carry.
+      if (res.status === 413) throw new LLMError(`Groq 413: conversation exceeds the free-tier tokens-per-minute cap. ${detail}`);
+      throw new LLMError(`Groq HTTP ${res.status}: ${detail}`);
+    }
 
     const json = (await res.json()) as {
       choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
