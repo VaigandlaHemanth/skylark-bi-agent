@@ -48,20 +48,20 @@ The cash block was not in my original design — the work order board turned out
 
 "The model never does arithmetic" is easy to assert, so `npm run eval` measures it. Ten founder questions run against the live agent and boards; every figure in the prose must trace back to one the engine returned. Misses are classified **derived** (arithmetic the engine should have done) or **fabricated** (no basis in retrieved data).
 
-The first run scored 85.7%, every miss a percentage divided in the model's head — asked about receivables it wrote "the top three account for over 53%", right that time and reproducible never. So `compute` became a tool and grouped results carry `share_pct`:
+The first run scored 85.7%, every miss a percentage divided in the model's head — asked about receivables it wrote "the top three account for over 53%", right that time and reproducible never. `compute` became a tool and grouped results gained `share_pct`, which reached 96.8%. But the prompt still only *asked*, so the same check now runs as a gate: before any answer ships, its figures are matched against everything the tools returned, and an answer that fails is sent back once with the offending numbers named.
 
 ```
-grounded   91/94 figures traced to a tool result (96.8%)
-derived    3        fabricated 0
+grounded   85/86 figures traced to a tool result (98.8%)
+derived    1        fabricated 0
 ```
 
-Zero fabricated is the number that matters. The eval also caught a bug in itself, flagging "48% filled" as fabricated when that reaches the model through the schema summary — the same deterministic layer.
+Zero fabricated is the number that matters, and the metric is the guarantee — `src/lib/grounding.ts` is the same module in both places, so the eval measures exactly what production enforces. Each answer carries the count it passed. The eval also caught a bug in itself, flagging "48% filled" as fabricated when that reaches the model through the schema summary, the same deterministic layer.
 
 ## 5. What I would do differently
 
 Ten questions is thin; forty would be better, and each costs several free-tier requests, so a bad minute rate-limits some into skips.
 
-Getting derived to zero is next. `compute` is used when the model remembers it, which is the wrong reliability model; refusing to render a percentage absent from a tool result would enforce it rather than ask. Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; a join across both boards on the masked deal name, so one deal is followable from "A. Lead Generated" to collected; and a chart spec returned with the prose.
+One derived figure survives the gate's single repair attempt; a second pass or a hard refusal would close it, at the cost of latency on a free tier. Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; a join across both boards on the masked deal name, so one deal is followable from "A. Lead Generated" to collected; and a chart spec returned with the prose.
 
 ## 6. AI tools used
 

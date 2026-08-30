@@ -21,6 +21,7 @@ import {
   SECTOR_CONCEPTS,
   WORK_STATUS_CONCEPTS,
 } from "../src/lib/normalize";
+import { checkGrounding, correctionPrompt, numbersIn, numbersInProse } from "../src/lib/grounding";
 import { resolveTimeframe, runQuery } from "../src/lib/query";
 import type { Dataset, Row } from "../src/lib/store";
 
@@ -328,6 +329,37 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   const eds: Dataset = { ...ds, rows: evenRows, rowCount: 3, distinct: {} };
   const even = runQuery(eds, { group_by: "sector", metrics: ["count", "sum:value"] });
   check("balanced groups are not caveated", even.caveats.some((c) => c.includes("concentrated in one group")), false);
+}
+
+/* ------------------------------------------------------ the grounding gate */
+
+{
+  const pool = numbersIn({ totals: { sum_value: 36291748.87, count: 176 }, groups: [{ client: "A", sum_receivable: 10347676.29 }] });
+
+  check("figures are read out of nested tool payloads", pool.has(36291748.87) && pool.has(176), true);
+  check("magnitude suffixes expand", numbersInProse("about 36.3M outstanding"), [36300000]);
+  check("ISO dates are not claims", numbersInProse("closing 2026-07-15"), []);
+
+  const clean = checkGrounding("Receivables total **36,291,748.87** across 176 work orders.", pool);
+  check("exact figures pass the gate", [clean.checked, clean.clean], [2, true]);
+
+  const rounded = checkGrounding("Receivables are about 36.3M.", pool);
+  check("stated magnitudes pass the gate", rounded.clean, true);
+
+  // The real failure: a share the model divided out for itself.
+  const derived = checkGrounding("The top client is 28.5% of receivables.", pool);
+  check("a self-computed share is caught", derived.clean, false);
+  check("and classified as derived, not invented", [derived.derived.length, derived.fabricated.length], [1, 0]);
+
+  const invented = checkGrounding("Pipeline stands at 4,821,006.", pool);
+  check("an unsupported figure is fabricated", invented.fabricated.length, 1);
+
+  const fix = correctionPrompt(derived);
+  check("the correction names the compute tool", fix.includes("compute"), true);
+  check("the correction names the offending figure", fix.includes("28.5"), true);
+
+  // Years and list markers must not trip the gate.
+  check("years and small ordinals are ignored", checkGrounding("In 2026 the top 3 clients led.", pool).checked, 0);
 }
 
 /* -------------------------------------------------------------------- out */

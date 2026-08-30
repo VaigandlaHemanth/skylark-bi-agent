@@ -90,79 +90,8 @@ const CASES: Case[] = [
 
 /* --------------------------------------------------------------- grounding */
 
-/** Every number appearing anywhere in a tool payload. */
-function numbersIn(value: unknown, out: Set<number> = new Set()): Set<number> {
-  if (typeof value === "number" && Number.isFinite(value)) out.add(value);
-  else if (typeof value === "string") {
-    for (const m of value.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)) {
-      const n = Number(m[0].replace(/,/g, ""));
-      if (Number.isFinite(n)) out.add(n);
-    }
-  } else if (Array.isArray(value)) value.forEach((v) => numbersIn(v, out));
-  else if (value && typeof value === "object") Object.values(value).forEach((v) => numbersIn(v, out));
-  return out;
-}
-
-const SUFFIX: Record<string, number> = { k: 1e3, m: 1e6, bn: 1e9, b: 1e9, cr: 1e7, l: 1e5, lakh: 1e5, lakhs: 1e5, crore: 1e7, crores: 1e7 };
-
-/** Numbers the model wrote, with any magnitude suffix expanded. */
-function numbersInProse(text: string): number[] {
-  const out: number[] = [];
-  // Ignore fenced/inline code and dates, which are not claims about the data.
-  const cleaned = text.replace(/`[^`]*`/g, " ").replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ");
-  for (const m of cleaned.matchAll(/(-?\d[\d,]*(?:\.\d+)?)\s*(lakhs?|crores?|bn|cr|[kmbl])?\b/gi)) {
-    const base = Number(m[1].replace(/,/g, ""));
-    if (!Number.isFinite(base)) continue;
-    const mult = m[2] ? SUFFIX[m[2].toLowerCase()] ?? 1 : 1;
-    out.push(base * mult);
-  }
-  return out;
-}
-
-/**
- * A prose figure is grounded if some retrieved figure matches it exactly, to
- * within rounding, or as a stated magnitude ("31.9M" for 31,894,034).
- */
-function isGrounded(n: number, pool: Set<number>): boolean {
-  if (pool.has(n)) return true;
-  for (const t of pool) {
-    if (t === 0 && n === 0) return true;
-    const denom = Math.max(Math.abs(t), 1);
-    if (Math.abs(n - t) / denom < 0.011) return true; // rounding / 1 d.p.
-    for (const scale of [1e3, 1e5, 1e6, 1e7, 1e9]) {
-      if (Math.abs(n * scale - t) / denom < 0.011) return true;
-    }
-  }
-  return false;
-}
-
-/** Years, list markers, small ordinals - not claims about the boards. */
-function isNoise(n: number): boolean {
-  if (!Number.isInteger(n)) return false;
-  if (n >= 1990 && n <= 2100) return true; // years
-  return Math.abs(n) <= 12; // list numbers, quarters, "top 3"
-}
-
-/**
- * An ungrounded figure is not automatically a fabrication. Classifying it says
- * which defect it is: DERIVED means the model did arithmetic that the compute
- * tool should have done (recoverable, and the fix is a tool); FABRICATED means
- * the figure has no basis in retrieved data at all (severe).
- */
-function classify(n: number, pool: Set<number>): "derived" | "fabricated" {
-  const vals = [...pool];
-  const close = (a: number, b: number) => Math.abs(a - b) / Math.max(Math.abs(b), 1) < 0.02;
-
-  for (const a of vals) {
-    if (a === 0) continue;
-    for (const b of vals) {
-      if (close(n, (a / b) * 100) || close(n, a / b)) return "derived"; // share / ratio
-      if (close(n, a + b) || close(n, a - b)) return "derived";
-      if (close(n, ((a - b) / Math.abs(b)) * 100)) return "derived"; // percent change
-    }
-  }
-  return "fabricated";
-}
+// The very module the agent gates on, so this metric is the guarantee.
+const { numbersIn, numbersInProse, isNoise, isGrounded, classify } = await import("../src/lib/grounding");
 
 /* -------------------------------------------------------------------- run */
 

@@ -13,7 +13,8 @@ type TraceDetail = {
 };
 
 type Step = { label: string; detail?: string; trace?: TraceDetail; kind: "run" | "done" | "err" };
-type Turn = { role: Role; content: string; steps?: Step[] };
+type Grounding = { checked: number; grounded: number; clean: boolean };
+type Turn = { role: Role; content: string; steps?: Step[]; grounding?: Grounding };
 
 type Health = {
   ready: boolean;
@@ -67,6 +68,12 @@ const Icon = {
   plus: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  ),
+  shield: (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 1.8 3 3.6v4.1c0 3 2.1 5.3 5 6.5 2.9-1.2 5-3.5 5-6.5V3.6L8 1.8Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="m5.9 7.9 1.6 1.6 2.8-3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ),
   down: (
@@ -238,7 +245,12 @@ export default function Page() {
                 return { ...t, steps };
               });
             } else if (ev.type === "answer") {
-              patch((t) => ({ ...t, content: ev.text, steps: (t.steps ?? []).map((s) => (s.kind === "run" ? { ...s, kind: "done" } : s)) }));
+              patch((t) => ({
+                ...t,
+                content: ev.text,
+                grounding: ev.grounding as Grounding | undefined,
+                steps: (t.steps ?? []).map((s) => (s.kind === "run" ? { ...s, kind: "done" } : s)),
+              }));
             } else if (ev.type === "error") {
               patch((t) => ({
                 ...t,
@@ -351,6 +363,20 @@ export default function Page() {
                 <div className="msghead">
                   <span className="mark mini" aria-hidden>◈</span>
                   <span className="who">Skylark BI</span>
+                  {t.grounding && t.grounding.checked > 0 && (
+                    <span
+                      className="verified"
+                      data-clean={t.grounding.clean || undefined}
+                      title={
+                        t.grounding.clean
+                          ? `All ${t.grounding.checked} figures in this answer were traced back to a query result.`
+                          : `${t.grounding.grounded} of ${t.grounding.checked} figures traced back to a query result. The rest could not be verified.`
+                      }
+                    >
+                      {t.grounding.clean ? Icon.shield : "!"}
+                      {t.grounding.clean ? `${t.grounding.checked} figures verified` : `${t.grounding.grounded}/${t.grounding.checked} verified`}
+                    </span>
+                  )}
                   {t.content && !t.content.startsWith("**Something went wrong") && (
                     <button
                       className="copy"

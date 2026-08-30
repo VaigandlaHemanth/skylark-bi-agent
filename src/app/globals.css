@@ -227,6 +227,25 @@ body::before {
   color: var(--text-2);
 }
 
+.verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: default;
+}
+
+.verified[data-clean] {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: color-mix(in srgb, var(--ok) 80%, var(--text));
+}
+
 .copy {
   appearance: none;
   border: 0;

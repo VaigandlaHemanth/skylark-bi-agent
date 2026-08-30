@@ -1,11 +1,14 @@
 /** The agent loop: question -> tool calls -> grounded answer. */
 
+import { checkGrounding, correctionPrompt, numbersIn, type GroundingReport } from "./grounding";
 import { complete, LLMError, providerInfo, type Completion, type Turn } from "./llm";
 import { MondayError } from "./monday";
 import { getDataset, type BoardKey } from "./store";
 import { executeTool, TOOL_SPECS } from "./tools";
 
 const MAX_STEPS = 6;
+/** One repair attempt: enough to fix a stray percentage, not enough to loop. */
+const MAX_CORRECTIONS = 1;
 
 /**
  * What the UI shows when a reviewer opens up a step. The claim "no number is
@@ -25,7 +28,7 @@ export type AgentEvent =
   | { type: "status"; text: string }
   | { type: "tool"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; summary: string; detail?: TraceDetail }
-  | { type: "answer"; text: string }
+  | { type: "answer"; text: string; grounding?: { checked: number; grounded: number; clean: boolean } }
   | { type: "error"; text: string; hint?: string };
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -222,6 +225,19 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
   let lastProvider = `${provider}/${model}`;
   let stickyProvider: Completion["provider"] | undefined;
 
+  // Every figure any tool returned this question. The answer is checked
+  // against this before it ships.
+  const retrieved = new Set<number>();
+  let corrections = 0;
+
+  /**
+   * Asking the model not to do arithmetic is a request. This is the check.
+   * An answer carrying figures no tool returned is sent back once with the
+   * offending numbers named; if it still does not trace, the answer ships
+   * with the discrepancy reported rather than hidden.
+   */
+  const verify = (text: string): GroundingReport => checkGrounding(text, retrieved);
+
   for (let step = 0; step < MAX_STEPS; step++) {
     let reply: Completion;
     try {
@@ -241,7 +257,22 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
     }
 
     if (!reply.toolCalls.length) {
-      yield { type: "answer", text: reply.text || "I could not produce an answer for that. Try rephrasing the question." };
+      const text = reply.text || "I could not produce an answer for that. Try rephrasing the question.";
+      const report = verify(text);
+
+      if (!report.clean && corrections < MAX_CORRECTIONS && reply.text) {
+        corrections++;
+        yield { type: "status", text: `Checking ${report.checked} figures against the data` };
+        turns.push({ role: "assistant", content: text, toolCalls: [] });
+        turns.push({ role: "user", content: correctionPrompt(report) });
+        continue;
+      }
+
+      yield {
+        type: "answer",
+        text,
+        grounding: { checked: report.checked, grounded: report.grounded, clean: report.clean },
+      };
       return;
     }
 
@@ -268,6 +299,8 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
         yield { type: "tool_result", name: call.name, summary: `failed: ${message.slice(0, 120)}` };
       }
 
+      numbersIn(payload, retrieved);
+
       let content = JSON.stringify(payload);
       if (content.length > TOOL_RESULT_CAP) {
         content = `${content.slice(0, TOOL_RESULT_CAP)}... [truncated - narrow the query with filters or a limit]`;
@@ -288,7 +321,8 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
     });
     const final = await complete(system, turns, [], stickyProvider);
     if (final.text) {
-      yield { type: "answer", text: final.text };
+      const report = verify(final.text);
+      yield { type: "answer", text: final.text, grounding: { checked: report.checked, grounded: report.grounded, clean: report.clean } };
       return;
     }
   } catch {
