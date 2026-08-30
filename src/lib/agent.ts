@@ -66,12 +66,18 @@ async function schemaSummary(): Promise<string> {
       lines.push(`fields: ${d.mapping.map((m) => m.field).join(", ")}`);
 
       // The single biggest accuracy win: let the model see the real vocabulary.
-      const vocab = Object.entries(d.distinct).filter(([, v]) => v.length <= 20);
-      for (const [field, values] of vocab) {
-        lines.push(`  ${field}: ${values.map((v) => `${v.value} (${v.count})`).join(", ")}`);
+      // Capped tightly - the whole prompt must fit the smallest fallback
+      // provider's per-request token budget (Groq free tier: 8k/min).
+      const MAX_VALUES = 12;
+      for (const [field, values] of Object.entries(d.distinct)) {
+        if (values.length > 20) {
+          lines.push(`  ${field}: ${values.length} distinct values - use distinct_values to list them`);
+        } else {
+          const shown = values.slice(0, MAX_VALUES).map((v) => `${v.value} (${v.count})`).join(", ");
+          const more = values.length > MAX_VALUES ? `, +${values.length - MAX_VALUES} more via distinct_values` : "";
+          lines.push(`  ${field}: ${shown}${more}`);
+        }
       }
-      const wide = Object.entries(d.distinct).filter(([, v]) => v.length > 20);
-      for (const [field, values] of wide) lines.push(`  ${field}: ${values.length} distinct values - use distinct_values to list them`);
 
       if (d.unmappedColumns.length) lines.push(`  other columns readable by exact title: ${d.unmappedColumns.map((c) => c.title).join(", ")}`);
       for (const w of d.quality.warnings.slice(0, 5)) lines.push(`  ! ${w}`);
@@ -88,8 +94,8 @@ async function schemaSummary(): Promise<string> {
  * minute, so an un-trimmed conversation would be rejected outright the moment
  * the primary provider rate-limits — exactly when the fallback is needed.
  */
-const TOOL_RESULT_CAP = 8_000;
-const TRANSCRIPT_CAP = 16_000; // ~4-5k tokens: leaves room for the system prompt inside Groq's 8k/min window
+const TOOL_RESULT_CAP = 6_000;
+const TRANSCRIPT_CAP = 12_000; // ~3-4k tokens: leaves room for prompt + tool specs inside Groq's 8k/request cap
 
 function compact(turns: Turn[]): void {
   const size = () => turns.reduce((n, t) => n + (t.role === "tool" ? t.content.length : t.content?.length ?? 0), 0);

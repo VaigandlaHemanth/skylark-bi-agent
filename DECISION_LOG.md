@@ -66,7 +66,7 @@ The model only narrates: headline numbers, what stands out, risks, one recommend
 
 ## 4. What I would do differently with more time
 
-1. **An evaluation set.** ~40 founder questions with expected numeric answers, run on every change. The *engine* is covered by 141 automated checks; the *agent's tool choices* are not measured. This is the largest gap.
+1. **An evaluation set.** ~40 founder questions with expected numeric answers, run on every change. The *engine* is covered by 160 automated checks; the *agent's tool choices* are not measured. This is the largest gap.
 2. **Confidence-scored entity resolution.** Client codes are already clean here, but the noise-word key (`Adani Green Pvt Ltd → adani green`) would need fuzzy scoring plus a review queue on real names — collapsing two different clients is a silent data error.
 3. **Persist the normalised snapshot.** Postgres or Redis with a scheduled sync: survives cold starts, makes trend questions ("versus last quarter") cheap, and lets me record *when* each row changed, which the boards do not expose.
 4. **Charts.** Several of these answers are better as a picture. The agent would return a chart spec alongside the prose.
@@ -76,11 +76,21 @@ The model only narrates: headline numbers, what stands out, risks, one recommend
 
 ---
 
-## 5. AI tools used
+## 5. Verification: an adversarial audit pass
+
+Before submission I ran a five-dimension review (data engine, agent loop, frontend, security, performance) in which independent reviewers proposed defects and a second adversarial pass tried to refute each one against the actual code. 36 claims were checked; 26 survived and were fixed. The three most instructive:
+
+- **The markdown renderer could freeze the browser.** Its paragraph collector refused to consume lines starting with bold text or a digit - which is how almost every BI answer begins - looping forever. No test had ever rendered a real answer in a browser, which is exactly the kind of gap adversarial review finds.
+- **`parseNumber` concatenated digit runs**, so a range cell like "1,00,000 - 2,00,000" silently became 100 billion in a sum, with no caveat - the worst possible failure for a tool whose whole premise is trustworthy numbers. It now takes the first number and flags the rest.
+- **`group_by` split case variants while the quality warning claimed they merge** - the engine and its own caveat contradicted each other. Buckets now key on the normalized form and display the majority spelling.
+
+The remaining fixes: FY range notation ("FY 2025-26") resolving a year early, two-digit quarter years, slash-dates with time suffixes, an IST off-by-one-day in the loose date fallback, an over-aggressive company-name normalizer, tool-argument coercion for schema-drifting free models, Gemini's parallel-tool-result format, transcript compaction that could trim results the model had not yet read, provider stickiness within a question, a forced final answer when the tool budget runs out, per-IP rate limiting, client-disconnect handling, and a `--replace` guard on the import script's destructive path.
+
+## 6. AI tools used
 
 Claude (Anthropic) via Claude Code, for scaffolding, normalisation edge cases, and this document. The architectural decisions — model-plans/code-computes, preserve-board-vocabulary, fuzzy column mapping, column-level date disambiguation, caveats-as-data — are mine; the assistant accelerated writing them.
 
-## 6. Challenges
+## 7. Challenges
 
 **Building before seeing the data.** Solved by making schema discovery a runtime feature. It paid off: the 38-column work-order sheet mapped on first contact.
 

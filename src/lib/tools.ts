@@ -19,13 +19,13 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "list_boards_and_fields",
     description:
-      "List the monday.com boards, row counts, which board column was mapped to which business field, the values that actually exist on each board, unmapped columns, and known data-quality warnings. Call this when unsure whether a field or a value exists.",
+      "Boards, row counts, field mapping, per-field vocabulary, unmapped columns and data-quality warnings. Call when unsure whether a field or value exists.",
     parameters: { type: "object", properties: {} },
   },
   {
     name: "distinct_values",
     description:
-      "List every value that actually appears in one field, with row counts. Use this BEFORE filtering on a value you are unsure about - the boards use Skylark's own wording (for example the sector list includes 'Renewables' and 'Powerline' rather than 'Energy').",
+      "Every value present in one field, with row counts. Use before filtering on an uncertain value - the boards use their own wording (e.g. sectors are 'Renewables'/'Powerline', not 'Energy').",
     parameters: {
       type: "object",
       properties: { board: BOARD_ARG, field: { type: "string", description: "Field name, e.g. sector, status, stage, invoice_status, owner, client." } },
@@ -35,7 +35,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "query_board",
     description:
-      "Filter, group and aggregate one board. This is the only way to produce a number - never do arithmetic yourself. Filter values are matched against the board's real vocabulary, so filtering sector = 'energy' will resolve to the energy-type values the board actually uses and report which ones it used.",
+      "Filter, group and aggregate one board - the ONLY way to produce a number. Filter values resolve against the board's real vocabulary (sector='energy' finds Renewables+Powerline) and the result reports what matched.",
     parameters: {
       type: "object",
       properties: {
@@ -50,7 +50,7 @@ export const TOOL_SPECS: ToolSpec[] = [
               op: {
                 type: "string",
                 enum: ["eq", "ne", "contains", "not_contains", "in", "not_in", "gt", "gte", "lt", "lte", "before", "after", "between", "is_empty", "not_empty"],
-                description: 'Comparison. Use "in" with a comma-separated list. Use "between" with "low,high". Dates use YYYY-MM-DD.',
+                description: '"in": comma list. "between": "low,high". Dates: YYYY-MM-DD.',
               },
               value: { type: "string", description: "Value to compare against." },
             },
@@ -60,13 +60,13 @@ export const TOOL_SPECS: ToolSpec[] = [
         timeframe: {
           type: "string",
           description:
-            'Natural-language period: "this quarter", "last quarter", "Q3 2026", "last 90 days", "FY26" (Indian Apr-Mar), "2025", or "2025-01-01 to 2025-03-31". Applied to close_date on deals and end_date on work orders unless date_field says otherwise.',
+            'Period: "this quarter", "Q3 2026", "last 90 days", "FY26" (Apr-Mar), "2025", "2025-01-01 to 2025-03-31". Applies to close_date (deals) / end_date (work orders) unless date_field overrides.',
         },
         date_field: { type: "string", description: "Which date field the timeframe applies to. Optional." },
         group_by: { type: "string", description: 'Field to break results down by, e.g. sector, status, stage, client, owner, invoice_status.' },
         metrics: {
           type: "array",
-          description: 'Metrics as "fn" or "fn:field". fn is one of count, sum, avg, min, max, median, distinct. Example: ["count","sum:value","avg:value"]. Defaults to ["count"].',
+          description: '"fn" or "fn:field"; fn: count|sum|avg|min|max|median|distinct. E.g. ["count","sum:value"]. Default ["count"].',
           items: { type: "string" },
         },
         sort: { type: "string", description: 'Sort key for groups, e.g. "sum_value desc" or "count desc".' },
@@ -79,7 +79,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "sample_rows",
     description:
-      "Read a handful of real records including the raw uncleaned cell values and per-row data-quality issues. Use this when a result looks surprising or a filter returns nothing.",
+      "A few real records with raw cell values and per-row issues. Use when a result looks surprising or a filter matches nothing.",
     parameters: {
       type: "object",
       properties: {
@@ -93,13 +93,13 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "data_quality",
     description:
-      "Full data-quality report for a board: fill rate and distinct count per field, values that could not be parsed, duplicate client spellings, dropped header rows, and parsing warnings. Use this to answer 'how reliable is this' or to footnote an answer.",
+      "Data-quality report: per-field fill rates, unparseable values, duplicate client spellings, dropped header rows. Use for 'how reliable is this'.",
     parameters: { type: "object", properties: { board: BOARD_ARG }, required: ["board"] },
   },
   {
     name: "leadership_brief",
     description:
-      "Assemble a complete executive snapshot in one call: open pipeline by stage, sector and probability; win rate; largest open deals; slipping deals; work-order status mix; overdue delivery; cash (billed, collected, still to bill, receivable, top receivable accounts); sector pipeline vs delivery; and data caveats. Use this for 'prepare the board update', 'weekly leadership summary' or 'how is the business doing'.",
+      "Full executive snapshot in one call: pipeline by stage/sector/probability, win rate, biggest and slipping deals, delivery status, overdue work, cash (billed/collected/unbilled/receivable), sector pipeline-vs-delivery, caveats. Use for 'board update' / 'how is the business doing'.",
     parameters: {
       type: "object",
       properties: {
