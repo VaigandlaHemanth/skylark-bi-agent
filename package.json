@@ -1,0 +1,26 @@
+{
+  "name": "skylark-bi-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "inspect:boards": "node scripts/inspect-boards.mjs",
+    "selftest": "tsx scripts/selftest.ts",
+    "e2etest": "tsx scripts/e2etest.mts",
+    "test": "npm run selftest && npm run e2etest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "next": "15.5.4",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.0"
+  }
+}

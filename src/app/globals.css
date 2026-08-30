@@ -1,0 +1,385 @@
+/* ---------------------------------------------------------------- tokens */
+
+:root {
+  /* Light palette. Dark is redefined below; nothing is defined only inside a media query. */
+  --bg: #f5f5f7;
+  --bg-far: #ebebef;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-solid: #ffffff;
+  --raised: rgba(255, 255, 255, 0.9);
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --text-3: #8e8e93;
+  --accent: #0071e3;
+  --accent-ink: #ffffff;
+  --separator: rgba(0, 0, 0, 0.08);
+  --hairline: rgba(0, 0, 0, 0.12);
+  --bubble: #0071e3;
+  --bubble-ink: #ffffff;
+  --chip: rgba(120, 120, 128, 0.12);
+  --chip-hover: rgba(120, 120, 128, 0.2);
+  --warn-bg: rgba(255, 159, 10, 0.14);
+  --warn-ink: #a15c00;
+  --danger: #d70015;
+  --ok: #1d8a3e;
+
+  --blur: 20px;
+  --radius: 18px;
+  --radius-sm: 12px;
+
+  /* An iOS-like critically damped curve: fast out, long graceful settle. */
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --fast: 180ms;
+  --base: 380ms;
+
+  --shell: 46rem;
+
+  font: 100% / 1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #000000;
+    --bg-far: #0a0a0c;
+    --surface: rgba(28, 28, 30, 0.68);
+    --surface-solid: #1c1c1e;
+    --raised: rgba(44, 44, 46, 0.82);
+    --text: #f5f5f7;
+    --text-2: #98989d;
+    --text-3: #7c7c81;
+    --accent: #0a84ff;
+    --separator: rgba(255, 255, 255, 0.1);
+    --hairline: rgba(255, 255, 255, 0.14);
+    --bubble: #0a84ff;
+    --chip: rgba(120, 120, 128, 0.24);
+    --chip-hover: rgba(120, 120, 128, 0.36);
+    --warn-bg: rgba(255, 159, 10, 0.16);
+    --warn-ink: #ffb340;
+    --danger: #ff453a;
+    --ok: #30d158;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* A soft, static aurora. No looping animation — nothing oscillates at 0.2 Hz. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: -1;
+  background:
+    radial-gradient(48rem 32rem at 18% -8%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 62%),
+    radial-gradient(40rem 30rem at 88% 6%, color-mix(in srgb, #5e5ce6 12%, transparent), transparent 60%),
+    var(--bg-far);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ shell */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding: 0 max(1rem, env(safe-area-inset-left));
+}
+
+/* Translucent chrome that content scrolls *under*. */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 0.25rem 0.7rem;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  /* Scroll-edge fade instead of a hard 1px divider. */
+  mask-image: linear-gradient(to bottom, #000 72%, transparent);
+}
+
+.mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.65rem;
+  background: linear-gradient(160deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #5e5ce6));
+  color: #fff;
+  font-size: 0.95rem;
+  flex: none;
+}
+
+.titles { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+
+.title {
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;   /* tighten as size grows */
+}
+
+.subtitle {
+  font-size: 0.74rem;
+  letter-spacing: 0.006em;    /* loosen small text */
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  background: var(--chip);
+  font-size: 0.72rem;
+  letter-spacing: 0.006em;
+  color: var(--text-2);
+  flex: none;
+}
+
+.dot { width: 0.44rem; height: 0.44rem; border-radius: 999px; background: var(--text-3); flex: none; }
+.dot[data-state="ok"] { background: var(--ok); }
+.dot[data-state="bad"] { background: var(--danger); }
+
+/* --------------------------------------------------------------- messages */
+
+.thread {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  padding: 0.5rem 0.25rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.turn { display: flex; flex-direction: column; gap: 0.5rem; }
+.turn[data-role="user"] { align-items: flex-end; }
+
+.bubble {
+  max-width: min(85%, 34rem);
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius);
+  border-bottom-right-radius: 0.4rem;
+  background: var(--bubble);
+  color: var(--bubble-ink);
+  letter-spacing: -0.002em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.answer { max-width: 100%; letter-spacing: -0.003em; }
+.answer > :first-child { margin-top: 0; }
+.answer > :last-child { margin-bottom: 0; }
+.answer p { margin: 0 0 0.7rem; }
+.answer h3 { font-size: 1rem; font-weight: 640; letter-spacing: -0.014em; margin: 1.1rem 0 0.45rem; }
+.answer ul, .answer ol { margin: 0 0 0.7rem; padding-left: 1.15rem; }
+.answer li { margin: 0.2rem 0; }
+.answer strong { font-weight: 640; }
+.answer code {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  font-size: 0.86em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.35rem;
+  background: var(--chip);
+}
+.answer em.caveat { display: block; margin-top: 0.8rem; font-size: 0.82rem; color: var(--text-2); }
+
+.tablewrap { overflow-x: auto; margin: 0 0 0.8rem; }
+.answer table { border-collapse: collapse; font-size: 0.86rem; min-width: 100%; }
+.answer th, .answer td { text-align: left; padding: 0.4rem 0.8rem 0.4rem 0; white-space: nowrap; }
+.answer th { font-weight: 600; color: var(--text-2); border-bottom: 1px solid var(--separator); }
+.answer tbody tr + tr td { border-top: 1px solid var(--separator); }
+.answer td:not(:first-child), .answer th:not(:first-child) { font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------ tool trace */
+
+.trace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.006em;
+  color: var(--text-2);
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: var(--chip);
+  animation: rise var(--base) var(--spring) both;
+}
+
+.step[data-kind="err"] { background: var(--warn-bg); color: var(--warn-ink); }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(0.35rem) scale(0.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.pulse { width: 0.4rem; height: 0.4rem; border-radius: 999px; background: currentColor; animation: breathe 1.4s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+/* ---------------------------------------------------------- empty state */
+
+.empty { margin: auto 0; padding: 1rem 0.25rem 2rem; animation: rise 500ms var(--spring) both; }
+
+.lede {
+  font-size: clamp(1.5rem, 4.2vw, 2rem);
+  line-height: 1.1;
+  letter-spacing: -0.026em;      /* negative tracking on display text */
+  font-weight: 640;
+  margin: 0 0 0.5rem;
+}
+
+.lede-sub { color: var(--text-2); margin: 0 0 1.4rem; max-width: 32rem; }
+
+.suggestions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+.suggestion {
+  appearance: none;
+  border: 1px solid var(--separator);
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  letter-spacing: -0.002em;
+  text-align: left;
+  padding: 0.55rem 0.85rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform var(--fast) var(--spring), background var(--fast) linear;
+}
+
+.suggestion:hover { background: var(--surface-solid); }
+.suggestion:active { transform: scale(0.97); }   /* feedback on press, not release */
+
+/* ---------------------------------------------------------------- banner */
+
+.banner {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  margin: 0 0.25rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  animation: rise var(--base) var(--spring) both;
+}
+
+.banner code { background: rgba(120, 120, 128, 0.2); padding: 0.05em 0.3em; border-radius: 0.3rem; }
+
+/* -------------------------------------------------------------- composer */
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  padding: 0.5rem 0 max(0.75rem, env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+}
+
+.field {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.4rem 0.4rem 0.4rem 0.9rem;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--raised);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 28px rgba(0, 0, 0, 0.06);
+  transition: border-color var(--fast) linear, box-shadow var(--base) var(--spring);
+}
+
+.field:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.field textarea {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  letter-spacing: -0.002em;
+  max-height: 9rem;
+  padding: 0.4rem 0;
+  line-height: 1.45;
+}
+
+.field textarea::placeholder { color: var(--text-3); }
+
+.send {
+  appearance: none;
+  border: 0;
+  width: 2.1rem;
+  height: 2.1rem;
+  flex: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform var(--fast) var(--spring), opacity var(--fast) linear;
+}
+
+.send:disabled { opacity: 0.35; cursor: default; }
+.send:not(:disabled):active { transform: scale(0.92); }
+
+.foot {
+  text-align: center;
+  font-size: 0.7rem;
+  letter-spacing: 0.008em;
+  color: var(--text-3);
+  padding-top: 0.5rem;
+}
+
+/* --------------------------------------------------------- accessibility */
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
+  .thread { scroll-behavior: auto; }
+  .step, .empty, .banner { animation: fade 200ms ease both; }
+  .suggestion:active, .send:active { transform: none; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .topbar, .composer { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; mask-image: none; }
+  .field, .suggestion { background: var(--surface-solid); }
+}
+
+@media (prefers-contrast: more) {
+  :root { --separator: rgba(0, 0, 0, 0.35); --hairline: rgba(0, 0, 0, 0.5); --text-2: #3a3a3c; }
+  .topbar, .composer { background: var(--bg); backdrop-filter: none; }
+}
