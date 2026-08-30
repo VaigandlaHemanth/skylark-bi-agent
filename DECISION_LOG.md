@@ -24,7 +24,7 @@ My first version canonicalised at import: Renewables became Energy, "F. Negotiat
 
 ### Cross-board comparison without a join key
 
-The boards share no row-level key, but they do line up on two categoricals: sector matches on all six values the work order board uses, owner on six of seven. So `compare_boards` joins at the group level and refuses anything else with the reason. It answers what neither board can alone — Railways carries 59.9M of work orders with 0.4% billed, and Tender holds 532M of pipeline with no work orders at all.
+The boards share no row-level key: client codes have zero overlap (199 against 51) and deal names repeat, one 27 times, multiplying rows fourfold on a join. They do line up on two categoricals — sector on all six values the work order board uses, owner on six of seven — so `compare_boards` joins at the group level and refuses anything else with the reason. It answers what neither board can alone: Railways carries 59.9M of work orders at 0.4% billed, and Tender holds 532M of pipeline with no work orders at all.
 
 ### Caveats as data
 
@@ -62,7 +62,7 @@ Fifteen questions is thin; forty would be better, and each costs several free-ti
 
 Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; and a chart spec returned with the prose.
 
-Following one deal from lead to collected still needs a key the export does not carry: client codes share nothing (199 against 51, zero overlap) and deal names repeat, one 27 times, multiplying rows fourfold on a join. Per-record linkage would need monday to carry a deal id on both boards.
+Per-record linkage needs a key the export does not carry — monday would have to put a deal id on both boards.
 
 ## 6. AI tools used
 
