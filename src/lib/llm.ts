@@ -105,10 +105,14 @@ export async function complete(system: string, turns: Turn[], tools: ToolSpec[],
 
   const failures: string[] = [];
 
-  for (const { provider, model } of chain) {
+  for (let i = 0; i < chain.length; i++) {
+    const { provider, model } = chain[i];
+    // Retry only on the last rung. Anywhere else, failing over is faster than
+    // waiting out a backoff.
+    const attempts = i === chain.length - 1 ? 3 : 1;
     try {
       const run = provider === "gemini" ? gemini : provider === "groq" ? groq : anthropic;
-      const result = await run(system, turns, tools, model);
+      const result = await run(system, turns, tools, model, attempts);
       // An empty turn with no tool call is a dead end; let the next provider try.
       if (!result.text && !result.toolCalls.length && chain.length > 1) {
         throw new LLMError(`${provider} returned an empty response`);
@@ -136,20 +140,31 @@ export async function complete(system: string, turns: Turn[], tools: ToolSpec[],
  */
 const NOT_WORTH_RETRYING = new Set([400, 401, 403, 404, 413, 429]);
 
-async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+/**
+ * A slow provider is worse than a failed one: measured in production, a single
+ * hanging Gemini call retried three times cost 26 of a question's 30 seconds,
+ * while the fallback answered the whole question in 5. So a request is capped,
+ * and when another provider is waiting the chain moves on instead of retrying.
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 15000);
+
+async function withRetry<T>(label: string, fn: (signal: AbortSignal) => Promise<T>, attempts = 3): Promise<T> {
   let last: unknown;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < attempts; i++) {
     if (i) await new Promise((r) => setTimeout(r, 700 * 2 ** i));
     try {
-      return await fn();
+      return await fn(AbortSignal.timeout(REQUEST_TIMEOUT_MS));
     } catch (err) {
       last = err;
-      // Judge retryability by the typed status, never by numbers that happen
-      // to appear inside an unrelated error message.
       if (err instanceof LLMError && err.status !== undefined && NOT_WORTH_RETRYING.has(err.status)) throw err;
     }
   }
-  throw new LLMError(`${label} failed after 3 attempts: ${last instanceof Error ? last.message : String(last)}`);
+  const why = last instanceof Error ? last.message : String(last);
+  throw new LLMError(
+    attempts === 1 ? `${label}: ${why}` : `${label} failed after ${attempts} attempts: ${why}`,
+    undefined,
+    last instanceof LLMError ? last.status : undefined,
+  );
 }
 
 let callSeq = 0;
@@ -170,7 +185,7 @@ function toGeminiSchema(s: JSONSchema): Record<string, unknown> {
   return out;
 }
 
-async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: string) {
+async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: string, attempts = 3) {
   const key = process.env.GEMINI_API_KEY!;
 
   const contents: Array<Record<string, unknown>> = [];
@@ -209,9 +224,10 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: s
     generationConfig: { temperature: 0.1, maxOutputTokens: 8192 },
   };
 
-  return withRetry("Gemini", async () => {
+  return withRetry("Gemini", async (signal) => {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
+      signal,
       // Header, not a query param: newer "auth keys" (AQ....) require it, and a
       // credential must never travel in a URL where it can be logged.
       headers: { "Content-Type": "application/json", "X-goog-api-key": key },
@@ -244,12 +260,12 @@ async function gemini(system: string, turns: Turn[], tools: ToolSpec[], model: s
       }
     }
     return { text: text.trim(), toolCalls };
-  });
+  }, attempts);
 }
 
 /* ------------------------------------------------------------------- Groq */
 
-async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: string) {
+async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: string, attempts = 3) {
   const key = process.env.GROQ_API_KEY!;
 
   const messages: Array<Record<string, unknown>> = [{ role: "system", content: system }];
@@ -266,9 +282,10 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: str
     } else messages.push({ role: "tool", tool_call_id: t.callId, content: t.content });
   }
 
-  return withRetry("Groq", async () => {
+  return withRetry("Groq", async (signal) => {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
+      signal,
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
@@ -297,7 +314,7 @@ async function groq(system: string, turns: Turn[], tools: ToolSpec[], model: str
       args: safeParse(c.function.arguments),
     }));
     return { text: (msg?.content ?? "").trim(), toolCalls };
-  });
+  }, attempts);
 }
 
 function safeParse(s: string): Record<string, unknown> {
@@ -312,7 +329,7 @@ function safeParse(s: string): Record<string, unknown> {
 
 /* -------------------------------------------------------------- Anthropic */
 
-async function anthropic(system: string, turns: Turn[], tools: ToolSpec[], model: string) {
+async function anthropic(system: string, turns: Turn[], tools: ToolSpec[], model: string, _attempts = 3) {
   const { default: AnthropicSDK } = await import("@anthropic-ai/sdk");
   const client = new AnthropicSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
 
