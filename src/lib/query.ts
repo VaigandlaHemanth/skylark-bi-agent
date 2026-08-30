@@ -389,6 +389,25 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
     if (n > 0) caveats.push(`${n} of ${matchedRows.length} matched rows have no "${field}" value; they are excluded from sums and averages on that field.`);
   }
 
+  // Quantities keep their unit in a sibling field, so a sum silently adds
+  // hectares to acres to bare counts. The number is still returned - refusing
+  // would be worse than reporting - but it must not be read as one quantity.
+  for (const d of defs) {
+    if ((d.fn !== "sum" && d.fn !== "average") || !d.field) continue;
+    const field = d.field;
+    const units = new Set<string>();
+    for (const r of matchedRows) {
+      if (readField(r, field) == null) continue;
+      const u = readField(r, `${field}_unit`);
+      units.add(u == null || u === "" ? "(no unit)" : String(u));
+    }
+    if (units.size > 1) {
+      caveats.push(
+        `"${field}" is recorded in more than one unit (${[...units].sort().join(", ")}), so this ${d.fn} adds quantities that are not the same measure. Group by ${field}_unit for a total that means something.`,
+      );
+    }
+  }
+
   const result: QueryResult = {
     board: `${ds.board.name} (${ds.key})`,
     scanned: ds.rowCount,

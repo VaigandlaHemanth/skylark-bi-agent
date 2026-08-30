@@ -146,7 +146,7 @@ export function correctionPrompt(report: GroundingReport): string {
  * dropped from a sum, a column that is half empty, a total one group
  * dominates, groups merged under a repeated name.
  */
-const MATERIAL = /excluded from sums|are excluded|only \d+% filled|concentrated in one group|not unique|could not be read|shown as "\(blank\)"|do not add to 100/i;
+const MATERIAL = /excluded from sums|are excluded|only \d+% filled|concentrated in one group|not unique|could not be read|shown as "\(blank\)"|do not add to 100|more than one unit/i;
 
 export function materialCaveats(caveats: string[]): string[] {
   return caveats.filter((c) => MATERIAL.test(c));
@@ -162,6 +162,7 @@ function alreadySaid(answer: string, caveat: string): boolean {
   if (/not unique/i.test(caveat)) return /not unique|repeat|duplicate|merge/.test(a);
   if (/could not be read/i.test(caveat)) return /could not be read|unavailable|unable|failed/.test(a);
   if (/do not add to 100/i.test(caveat)) return /do not add|not add to 100|top \d+/.test(a);
+  if (/more than one unit/i.test(caveat)) return /unit|hectare|acre|not the same measure|mixed/.test(a);
 
   // What is left is the missing-data family. Any wording that tells the reader
   // the figure rests on incomplete data counts - the point is that the reader

@@ -679,6 +679,49 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   check("a clarifying question offers its own options", clarify, ["Won deal value", "Billed work"]);
 }
 
+/* --------------------------------------------------------- quantity units */
+
+{
+  // parseQuantity keeps the unit in a sibling field, so a bare sum adds
+  // hectares to acres to a plain count. The figure is still returned, but it
+  // must not be read as one quantity.
+  const qRows: Row[] = [
+    row("q1", { sector: "Mining", qty: 5360, qty_unit: "HA" }),
+    row("q2", { sector: "Powerline", qty: 4, qty_unit: null }),
+    row("q3", { sector: "Renewables", qty: 2057, qty_unit: "Acr" }),
+  ];
+  const qds: Dataset = {
+    ...ds,
+    rows: qRows,
+    rowCount: qRows.length,
+    distinct: {},
+    mapping: [
+      { field: "sector", label: "Sector", type: "text", columnId: "c1", columnTitle: "Sector/service", columnType: "text", confidence: 100 },
+      { field: "qty", label: "Quantity", type: "quantity", columnId: "c9", columnTitle: "Quantities as per PO", columnType: "text", confidence: 100 },
+    ],
+  };
+
+  const mixed = runQuery(qds, { metrics: ["sum:qty"] });
+  check("the mixed total is still returned", mixed.totals?.sum_qty, 7421);
+  const unitCaveat = (mixed.caveats ?? []).find((c) => c.includes("more than one unit"));
+  check("a mixed-unit sum is caveated", !!unitCaveat, true);
+  check("and it names the units found", unitCaveat?.includes("Acr") && unitCaveat?.includes("HA"), true);
+  check("it is material, so the gate enforces it", materialCaveats(mixed.caveats ?? []).some((c) => c.includes("more than one unit")), true);
+
+  // One unit throughout is a meaningful total and must not be caveated.
+  const sameUnit: Row[] = [
+    row("s1", { sector: "Mining", qty: 100, qty_unit: "HA" }),
+    row("s2", { sector: "Mining", qty: 200, qty_unit: "HA" }),
+  ];
+  const sds: Dataset = { ...qds, rows: sameUnit, rowCount: 2 };
+  const single = runQuery(sds, { metrics: ["sum:qty"] });
+  check("a single-unit sum is not caveated", (single.caveats ?? []).some((c) => c.includes("more than one unit")), false);
+
+  // Counting rows says nothing about units, so it must stay quiet.
+  const counted = runQuery(qds, { metrics: ["count"] });
+  check("counting rows raises no unit caveat", (counted.caveats ?? []).some((c) => c.includes("more than one unit")), false);
+}
+
 /* -------------------------------------------------------------------- out */
 
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);
