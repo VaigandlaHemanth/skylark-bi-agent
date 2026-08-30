@@ -12,13 +12,13 @@ type Health = {
   monday: { tokenSet: boolean; error?: string; datasets?: Array<{ board: string; name: string | null; rows: number; error: string | null }> };
 };
 
-const SUGGESTIONS = [
-  "How's our pipeline looking for the energy sector?",
-  "Prepare the leadership update for FY26",
-  "What's our win rate, and where are we losing?",
-  "How much is sitting in receivables, and with whom?",
-  "How much work is overdue?",
-  "How reliable is the deal value column?",
+const SUGGESTIONS: Array<{ cat: string; q: string }> = [
+  { cat: "Pipeline", q: "How's our pipeline looking for the energy sector?" },
+  { cat: "Leadership", q: "Prepare the leadership update for FY26" },
+  { cat: "Sales", q: "What's our win rate, and where are we losing?" },
+  { cat: "Cash", q: "How much is sitting in receivables, and with whom?" },
+  { cat: "Delivery", q: "How much work is overdue?" },
+  { cat: "Data quality", q: "How reliable is the deal value column?" },
 ];
 
 const TOOL_LABELS: Record<string, string> = {
@@ -30,14 +30,49 @@ const TOOL_LABELS: Record<string, string> = {
   leadership_brief: "Assembling exec snapshot",
 };
 
+/* ------------------------------------------------------------------- icons */
+
+const Icon = {
+  send: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 12.5v-9M4.2 7.2 8 3.4l3.8 3.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+  stop: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" />
+    </svg>
+  ),
+  copy: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.8" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10.5 3.5h-6a2 2 0 0 0-2 2v6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  ),
+  check: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+  down: (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 3.5v9M4.2 8.8 8 12.6l3.8-3.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+};
+
 export default function Page() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState<Health | null>(null);
+  const [hintIdx, setHintIdx] = useState(0);
+  const [showJump, setShowJump] = useState(false);
+  const [copied, setCopied] = useState<number | null>(null);
 
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetch("/api/health")
@@ -45,6 +80,13 @@ export default function Page() {
       .then(setHealth)
       .catch(() => setHealth(null));
   }, []);
+
+  // Rotate the ghost hint while the field is idle.
+  useEffect(() => {
+    if (draft || busy) return;
+    const id = setInterval(() => setHintIdx((i) => (i + 1) % SUGGESTIONS.length), 7000);
+    return () => clearInterval(id);
+  }, [draft, busy]);
 
   useEffect(() => {
     const el = threadRef.current;
@@ -55,11 +97,26 @@ export default function Page() {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [turns]);
 
+  const onThreadScroll = useCallback(() => {
+    const el = threadRef.current;
+    if (!el) return;
+    setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 320);
+  }, []);
+
+  const jumpToLatest = useCallback(() => {
+    const el = threadRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
   const grow = useCallback(() => {
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, []);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
   }, []);
 
   const ask = useCallback(
@@ -77,11 +134,15 @@ export default function Page() {
       const patch = (fn: (t: Turn) => Turn) =>
         setTurns((prev) => prev.map((t, i) => (i === prev.length - 1 ? fn(t) : t)));
 
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages: history.map(({ role, content }) => ({ role, content })) }),
+          signal: controller.signal,
         });
 
         if (!res.ok) {
@@ -143,7 +204,15 @@ export default function Page() {
           }
         }
       } catch (err) {
-        patch((t) => ({ ...t, content: `**Could not reach the agent.**\n\n${err instanceof Error ? err.message : String(err)}`, steps: [] }));
+        if (err instanceof DOMException && err.name === "AbortError") {
+          patch((t) => ({
+            ...t,
+            content: t.content || "Stopped.",
+            steps: (t.steps ?? []).map((s) => (s.kind === "run" ? { ...s, kind: "done" } : s)),
+          }));
+        } else {
+          patch((t) => ({ ...t, content: `**Could not reach the agent.**\n\n${err instanceof Error ? err.message : String(err)}`, steps: [] }));
+        }
       } finally {
         // If the stream died mid-flight (network drop, serverless timeout),
         // close out the pulsing step chips and say so instead of hanging.
@@ -156,6 +225,7 @@ export default function Page() {
                 steps: (t.steps ?? []).map((s) => (s.kind === "run" ? { ...s, kind: "err" } : s)),
               },
         );
+        abortRef.current = null;
         setBusy(false);
         inputRef.current?.focus();
       }
@@ -163,8 +233,16 @@ export default function Page() {
     [busy, grow, turns],
   );
 
+  const copyAnswer = useCallback((index: number, content: string) => {
+    navigator.clipboard?.writeText(content).then(() => {
+      setCopied(index);
+      setTimeout(() => setCopied((c) => (c === index ? null : c)), 1600);
+    });
+  }, []);
+
   const provider = health?.llm.provider;
   const rows = health?.monday.datasets?.reduce((n, d) => n + (d.rows ?? 0), 0) ?? 0;
+  const hint = SUGGESTIONS[hintIdx].q;
 
   return (
     <div className="app">
@@ -182,7 +260,7 @@ export default function Page() {
         </span>
       </header>
 
-      <div className="thread" ref={threadRef}>
+      <div className="thread" ref={threadRef} onScroll={onThreadScroll}>
         {health && !health.ready && <SetupBanner health={health} />}
 
         {!turns.length && (
@@ -191,10 +269,11 @@ export default function Page() {
             <p className="lede-sub">
               I read your monday.com work orders and deals live, clean the messy bits, and tell you what the numbers mean — with the caveats attached.
             </p>
-            <div className="suggestions">
-              {SUGGESTIONS.map((s) => (
-                <button key={s} className="suggestion" onClick={() => ask(s)} disabled={busy}>
-                  {s}
+            <div className="cards" role="list">
+              {SUGGESTIONS.map((s, i) => (
+                <button key={s.q} role="listitem" className="card" style={{ animationDelay: `${80 + i * 45}ms` }} onClick={() => ask(s.q)} disabled={busy}>
+                  <span className="cat">{s.cat}</span>
+                  <span className="q">{s.q}</span>
                 </button>
               ))}
             </div>
@@ -207,6 +286,21 @@ export default function Page() {
               <div className="bubble">{t.content}</div>
             ) : (
               <>
+                <div className="msghead">
+                  <span className="mark mini" aria-hidden>◈</span>
+                  <span className="who">Skylark BI</span>
+                  {t.content && !t.content.startsWith("**Something went wrong") && (
+                    <button
+                      className="copy"
+                      onClick={() => copyAnswer(i, t.content)}
+                      aria-label={copied === i ? "Copied" : "Copy answer"}
+                      data-done={copied === i || undefined}
+                    >
+                      {copied === i ? Icon.check : Icon.copy}
+                      <span>{copied === i ? "Copied" : "Copy"}</span>
+                    </button>
+                  )}
+                </div>
                 {!!t.steps?.length && (
                   <div className="trace">
                     {t.steps.map((s, j) => (
@@ -224,30 +318,61 @@ export default function Page() {
         ))}
       </div>
 
+      {showJump && (
+        <button className="jump" onClick={jumpToLatest} aria-label="Jump to latest">
+          {Icon.down}
+        </button>
+      )}
+
       <div className="composer">
         <div className="field">
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={draft}
-            placeholder="How's our pipeline looking for energy this quarter?"
-            onChange={(e) => {
-              setDraft(e.target.value);
-              grow();
-            }}
-            onKeyDown={(e) => {
-              // isComposing: Enter during IME composition confirms the
-              // characters - it must not send the message.
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                ask(draft);
-              }
-            }}
-            disabled={busy}
-          />
-          <button className="send" onClick={() => ask(draft)} disabled={busy || !draft.trim()} aria-label="Send">
-            {busy ? "…" : "↑"}
-          </button>
+          <div className="inputwrap">
+            {!draft && (
+              <span className="ghost" key={hintIdx} aria-hidden>
+                {hint}
+              </span>
+            )}
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={draft}
+              aria-label="Ask a question about the business"
+              onChange={(e) => {
+                setDraft(e.target.value);
+                grow();
+              }}
+              onKeyDown={(e) => {
+                // Tab accepts the ghost suggestion, like inline autocomplete.
+                if (e.key === "Tab" && !e.shiftKey && !draft.trim() && !busy) {
+                  e.preventDefault();
+                  setDraft(hint);
+                  requestAnimationFrame(grow);
+                  return;
+                }
+                // isComposing: Enter during IME composition confirms the
+                // characters - it must not send the message.
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  ask(draft);
+                }
+              }}
+              disabled={busy}
+            />
+          </div>
+          {!draft && !busy && (
+            <span className="kbdhint" aria-hidden>
+              <kbd>Tab</kbd>
+            </span>
+          )}
+          {busy ? (
+            <button className="send stop" onClick={stop} aria-label="Stop generating">
+              {Icon.stop}
+            </button>
+          ) : (
+            <button className="send" onClick={() => ask(draft)} disabled={!draft.trim()} aria-label="Send">
+              {Icon.send}
+            </button>
+          )}
         </div>
         <p className="foot">Read-only. Figures are computed in code from live board data, never written by the model.</p>
       </div>

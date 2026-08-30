@@ -65,6 +65,23 @@
 
 * { box-sizing: border-box; }
 
+::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+textarea { caret-color: var(--accent); }
+
+/* Themed, quiet scrollbar. */
+* { scrollbar-width: thin; scrollbar-color: var(--chip) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--chip); border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--chip-hover); }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -189,6 +206,54 @@ body::before {
 .turn { display: flex; flex-direction: column; gap: 0.5rem; }
 .turn[data-role="user"] { align-items: flex-end; }
 
+.msghead {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 1.5rem;
+}
+
+.mark.mini {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 0.45rem;
+  font-size: 0.62rem;
+}
+
+.who {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: var(--text-2);
+}
+
+.copy {
+  appearance: none;
+  border: 0;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.24rem 0.55rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--fast) linear, background var(--fast) linear, color var(--fast) linear, transform var(--fast) var(--spring);
+}
+
+.turn:hover .copy, .copy:focus-visible, .copy[data-done] { opacity: 1; }
+.copy:hover { background: var(--chip); color: var(--text-2); }
+.copy:active { transform: scale(0.95); }
+.copy[data-done] { color: var(--ok); }
+
+@media (hover: none) {
+  .copy { opacity: 1; } /* touch has no hover to reveal it */
+}
+
 .bubble {
   max-width: min(85%, 34rem);
   padding: 0.6rem 0.9rem;
@@ -277,25 +342,57 @@ body::before {
 
 .lede-sub { color: var(--text-2); margin: 0 0 1.4rem; max-width: 32rem; }
 
-.suggestions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
 
-.suggestion {
+@media (max-width: 560px) {
+  .cards { grid-template-columns: 1fr; }
+}
+
+.card {
   appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.28rem;
   border: 1px solid var(--separator);
   background: var(--raised);
   color: var(--text);
   font: inherit;
-  font-size: 0.86rem;
-  letter-spacing: -0.002em;
   text-align: left;
-  padding: 0.55rem 0.85rem;
-  border-radius: 999px;
+  padding: 0.75rem 0.95rem;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: transform var(--fast) var(--spring), background var(--fast) linear;
+  animation: rise 460ms var(--spring) both;
+  transition: transform var(--fast) var(--spring), background var(--fast) linear, border-color var(--fast) linear, box-shadow var(--base) var(--spring);
 }
 
-.suggestion:hover { background: var(--surface-solid); }
-.suggestion:active { transform: scale(0.97); }   /* feedback on press, not release */
+.card:hover {
+  background: var(--surface-solid);
+  border-color: var(--hairline);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05), 0 10px 24px rgba(0, 0, 0, 0.07);
+}
+
+.card:active { transform: scale(0.985); }
+
+.card .cat {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--accent) 78%, var(--text-2));
+}
+
+.card .q {
+  font-size: 0.88rem;
+  letter-spacing: -0.003em;
+  line-height: 1.4;
+  color: var(--text);
+}
 
 /* ---------------------------------------------------------------- banner */
 
@@ -348,8 +445,16 @@ body::before {
   box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+.inputwrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
 .field textarea {
   flex: 1;
+  width: 100%;
   border: 0;
   outline: 0;
   resize: none;
@@ -362,7 +467,43 @@ body::before {
   line-height: 1.45;
 }
 
-.field textarea::placeholder { color: var(--text-3); }
+/* Rotating suggestion shown as ghost text; Tab accepts it. */
+.ghost {
+  position: absolute;
+  inset: 0.4rem 0 auto 0;
+  color: var(--text-2);
+  letter-spacing: -0.002em;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  animation: ghostin 340ms var(--spring) both;
+}
+
+@keyframes ghostin {
+  from { opacity: 0; transform: translateY(0.25rem); }
+  to   { opacity: 1; transform: none; }
+}
+
+.kbdhint { flex: none; display: inline-flex; align-items: center; }
+
+@media (hover: none) {
+  .kbdhint { display: none; } /* touchscreens have no Tab key */
+}
+
+kbd {
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  background: var(--chip);
+  border: 1px solid var(--separator);
+  border-bottom-width: 2px;
+  border-radius: 0.4rem;
+  padding: 0.14rem 0.42rem;
+}
 
 .send {
   appearance: none;
@@ -382,6 +523,34 @@ body::before {
 .send:disabled { opacity: 0.35; cursor: default; }
 .send:not(:disabled):active { transform: scale(0.92); }
 
+/* While streaming the send button becomes Stop - same footprint, calmer color. */
+.send.stop { background: var(--chip-hover); color: var(--text); }
+.send.stop:hover { background: color-mix(in srgb, var(--danger) 24%, var(--chip-hover)); }
+
+.jump {
+  position: fixed;
+  right: max(1.25rem, env(safe-area-inset-right));
+  bottom: 7.5rem;
+  z-index: 9;
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--raised);
+  backdrop-filter: blur(var(--blur)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(160%);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08), 0 10px 28px rgba(0, 0, 0, 0.12);
+  animation: rise 300ms var(--spring) both;
+  transition: transform var(--fast) var(--spring), color var(--fast) linear;
+}
+
+.jump:hover { color: var(--text); transform: translateY(-1px); }
+.jump:active { transform: scale(0.94); }
+
 .foot {
   text-align: center;
   font-size: 0.7rem;
@@ -395,14 +564,15 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
   .thread { scroll-behavior: auto; }
-  .step, .empty, .banner { animation: fade 200ms ease both; }
-  .suggestion:active, .send:active { transform: none; }
+  .step, .empty, .banner, .card, .ghost, .jump { animation: fade 200ms ease both; }
+  .card:active, .send:active, .copy:active, .jump:active { transform: none; }
+  .card:hover, .jump:hover { transform: none; }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 }
 
 @media (prefers-reduced-transparency: reduce) {
   .topbar, .composer { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; mask-image: none; }
-  .field, .suggestion { background: var(--surface-solid); }
+  .field, .card, .jump { background: var(--surface-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 @media (prefers-contrast: more) {
