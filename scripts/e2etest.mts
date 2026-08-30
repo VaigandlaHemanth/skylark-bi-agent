@@ -1,9 +1,9 @@
 /**
  * End-to-end test with no API keys and no network.
  *
- * Stubs `fetch` to serve (a) a monday.com board with deliberately messy,
- * deliberately mis-named columns and (b) a scripted Gemini response, then runs
- * the real agent loop. This exercises the whole chain:
+ * Stubs `fetch` to serve two monday.com boards built from the REAL column
+ * headers and REAL vocabulary of the assignment spreadsheets, then runs the
+ * actual agent loop. This exercises the whole chain:
  *
  *   monday client -> column mapping -> normalization -> query engine -> tools -> agent
  *
@@ -15,92 +15,78 @@ process.env.MONDAY_API_TOKEN = "test-token";
 process.env.MONDAY_DEALS_BOARD_ID = "";
 process.env.MONDAY_WORK_ORDERS_BOARD_ID = "";
 
-/* ------------------------------------------------- fake monday.com content */
+/* --------------------------------------------- fixtures (real board shape) */
 
-// Headers on purpose do NOT match the canonical field names.
-const DEAL_COLUMNS = [
-  { id: "c_client", title: "Customer Name", type: "text" },
-  { id: "c_ind", title: "Industry", type: "status" },
-  { id: "c_stage", title: "Funnel Stage", type: "color" },
-  { id: "c_val", title: "Deal Value (INR)", type: "numbers" },
-  { id: "c_close", title: "Expected Closure", type: "text" },
-  { id: "c_owner", title: "Sales Rep", type: "people" },
-  { id: "c_misc", title: "Internal Ref", type: "text" },
+// Headers verbatim from the assignment export. None of them match the app's
+// canonical field names, which is the point.
+const DEAL_HEADERS = [
+  "Deal Name", "Owner code", "Client Code", "Deal Status", "Close Date (A)", "Closure Probability",
+  "Masked Deal value", "Tentative Close Date", "Deal Stage", "Product deal", "Sector/service", "Created Date",
 ];
 
-const WO_COLUMNS = [
-  { id: "w_client", title: "Client", type: "text" },
-  { id: "w_sec", title: "Vertical", type: "dropdown" },
-  { id: "w_stat", title: "Execution Status", type: "color" },
-  { id: "w_val", title: "Billing Amount", type: "text" },
-  { id: "w_end", title: "Target Date", type: "text" },
-  { id: "w_area", title: "Area (acres)", type: "numbers" },
+const DEAL_ROWS: string[][] = [
+  ["Naruto", "OWNER_001", "COMPANY089", "Open", "", "High", "489360", "2026-02-26", "B. Sales Qualified Leads", "Service + Spectra", "Mining", "2025-12-26"],
+  ["Sasuke", "OWNER_001", "COMPANY091", "Open", "", "", "17616960", "2026-02-28", "E. Proposal/Commercials Sent", "", "Renewables", "2025-09-15"],
+  ["Sakura", "OWNER_002", "COMPANY124", "Open", "", "Medium", "611700", "2026-02-26", "F. Negotiations", "", "Powerline", "2025-11-12"],
+  ["Alphonse", "OWNER_003", "COMPANY005", "Won", "2025-11-28", "", "1223400", "2025-11-20", "G. Project Won", "Pure Service", "Renewables", "2025-07-28"],
+  ["Ben Tennyson", "OWNER_003", "COMPANY038", "Won", "", "", "305850", "2025-08-31", "H. Work Order Received", "Pure Service", "Mining", "2025-05-14"],
+  ["Mojo Jojo", "OWNER_003", "COMPANY133", "Dead", "", "", "367020", "2025-07-04", "L. Project Lost", "Pure Service", "Railways", "2024-11-17"],
+  ["Subaru", "OWNER_006", "COMPANY186", "Dead", "", "Low", "", "2025-01-14", "N. Not relevant at the moment", "", "Others", "2024-09-30"],
+  ["Tanjiro", "OWNER_004", "COMPANY076", "Open", "", "High", "550530", "2026-01-15", "A. Lead Generated", "Pure Service", "Renewables", "2026-01-08"],
+  // A repeated header row, exactly as it appears partway down the real export.
+  ["Nezuko", "", "", "Deal Status", "Close Date (A)", "Closure Probability", "", "Tentative Close Date", "Deal Stage", "Product deal", "Sector/service", "Created Date"],
+  ["Alias_162", "OWNER_002", "COMPANY111", "On Hold", "", "", "", "", "M. Projects On Hold", "", "Construction", "2025-11-27"],
 ];
 
-const DEAL_ROWS = [
-  ["Adani Green Pvt Ltd", "Solar EPC", "Proposal", "12,00,000", "15/07/2026", "R. Nair", "D-01"],
-  ["ADANI GREEN PVT. LTD.", "Renewables", "Negotiation", "₹8.5 lakhs", "2026-08-20", "R. Nair", "D-02"],
-  ["Tata Power", "power", "Closed Won", "45,00,000", "10-Jul-2026", "S. Iyer", "D-03"],
-  ["Coal India", "Mining", "closed lost", "30,00,000", "Aug 2026", "S. Iyer", "D-04"],
-  ["JSW Steel", "mining", "Qualified", "", "Q3 2026", "", "D-05"],
-  ["L&T Construction", "Infrastructure", "Proposal", "$1.2M", "05/09/2026", "A. Rao", "D-06"],
-  ["ONGC", "Oil & Gas", "Lead", "TBD", "N/A", "A. Rao", "D-07"],
-  ["Vestas India", "Wind", "Won", "22 lakhs", "28/06/2026", "R. Nair", "D-08"],
+const WO_HEADERS = [
+  "Deal name masked", "Customer Name Code", "Serial #", "Nature of Work", "Execution Status",
+  "Data Delivery Date", "Date of PO/LOI", "Document Type", "Probable Start Date", "Probable End Date",
+  "BD/KAM Personnel code", "Sector", "Type of Work",
+  "Is any Skylark software platform part of the client deliverables in this deal?",
+  "Amount in Rupees (Excl of GST) (Masked)", "Billed Value in Rupees (Excl of GST.) (Masked)",
+  "Collected Amount in Rupees (Incl of GST.) (Masked)", "Amount to be billed in Rs. (Exl. of GST) (Masked)",
+  "Amount Receivable (Masked)", "Invoice Status", "Quantities as per PO", "WO Status (billed)",
 ];
 
-const WO_ROWS = [
-  ["Adani Green Pvt. Ltd.", "Solar", "In Progress", "9,00,000", "30/09/2026", "450"],
-  ["Tata Power", "Power", "Completed", "45,00,000", "12/07/2026", "1200"],
-  ["Coal India Ltd", "Mining", "WIP", "18,00,000", "01/06/2026", "800"],
-  ["NHAI", "Highways", "Delivered", "6,50,000", "20/08/2026", "300"],
-  ["JSW Steel", "Mining", "On Hold", "", "", "150"],
+const WO_ROWS: string[][] = [
+  ["Scooby-Doo", "WOCOMPANY_002", "SDPLDEAL-075", "One time Project", "Completed", "2025-09-27", "2025-10-29", "Purchase Order", "2025-05-31", "2025-06-03", "OWNER_003", "Mining", "Raw images/videography", "NONE", "264398.08", "264398.08", "264398.08", "0", "0", "Fully Billed", "5360 HA", "Closed"],
+  ["Appa", "WOCOMPANY_038", "SDPLDEAL-101", "Proof of Concept", "Not Started", "", "2025-07-31", "Purchase Order", "2025-08-11", "2025-08-15", "OWNER_002", "Powerline", "Powerline Inspection", "", "154150", "", "", "154150", "181897", "Not billed yet", "4", "Open"],
+  ["Alias_160", "WOCOMPANY_051", "SDPLDEAL-002", "Annual Rate Contract", "Ongoing", "", "2025-04-10", "Purchase Order", "2025-05-01", "2025-12-31", "OWNER_001", "Renewables", "Topography Survey: RGB", "SPECTRA", "1233200", "554940", "400173.4", "678260", "1433885.9", "Partially Billed", "2057 Acr", "Open"],
+  ["Alphonse", "WOCOMPANY_009", "SDPLDEAL-003", "One time Project", "Executed until current month", "2025-05-13", "2025-04-10", "Purchase Order", "2025-05-01", "2025-05-31", "OWNER_001", "Mining", "LiDAR Survey: LiDAR", "NONE", "308300", "308300", "", "0", "327414.6", "Fully Billed", "3956HA", "Open"],
+  ["Tanjiro", "WOCOMPANY_019", "SDPLDEAL-004", "Monthly Contract", "Pause / struck", "", "2025-06-11", "LOA/LOI", "2025-07-01", "2025-08-30", "OWNER_003", "Renewables", "Others", "NONE", "184980", "", "", "184980", "218276.4", "", "24 Months", ""],
+  ["Sakura", "WOCOMPANY_036", "SDPLDEAL-005", "One time Project", "Partial Completed", "", "2025-10-27", "Purchase Order", "2025-11-01", "2025-11-30", "OWNER_004", "Railways", "Hydrology, Topography Survey: RGB", "NONE", "431620", "215810", "", "215810", "254655.8", "Partially Billed", "Rate based on MW slabs", "Open"],
+  ["Subaru", "WOCOMPANY_026", "SDPLDEAL-006", "One time Project", "Details pending from Client", "", "2026-01-09", "Email Confirmation", "2026-01-15", "2026-02-28", "OWNER_005", "Mining", "Topography Survey: RGB", "SPECTRA + DMO", "24664", "", "", "24664", "29103.52", "Not billed yet", "-1309.85", "Open"],
+  ["Bugs Bunny", "WOCOMPANY_002", "SDPLDEAL-007", "One time Project", "Completed", "2025-06-10", "2025-04-01", "Purchase Order", "2025-04-15", "2025-06-16", "OWNER_001", "Others", "Others", "DMO", "0", "0", "", "0", "0", "Fully Billed", "1", "Closed"],
 ];
 
-function itemsPage(columns: Array<{ id: string }>, rows: string[][], prefix: string) {
-  return {
-    cursor: null,
-    items: rows.map((r, i) => ({
-      id: `${prefix}${i}`,
-      name: r[0],
-      column_values: columns.map((c, j) => ({ id: c.id, text: r[j] ?? "" })),
-    })),
-  };
+function board(headers: string[], rows: string[][], prefix: string) {
+  const columns = headers.map((title, i) => ({ id: `${prefix}${i}`, title, type: "text" }));
+  const items = rows.map((r, i) => ({
+    id: `${prefix}item${i}`,
+    name: r[0],
+    column_values: columns.map((c, j) => ({ id: c.id, text: r[j] ?? "" })),
+  }));
+  return { columns, items };
 }
+
+const DEALS = board(DEAL_HEADERS, DEAL_ROWS, "d");
+const WORK = board(WO_HEADERS, WO_ROWS, "w");
 
 /* ------------------------------------------------------ scripted LLM turns */
 
 let llmTurn = 0;
 const LLM_SCRIPT = [
-  // Turn 1: the model asks for the open energy pipeline.
   {
-    candidates: [
-      {
-        content: {
-          parts: [
-            {
-              functionCall: {
-                name: "query_board",
-                args: {
-                  board: "deals",
-                  filters: [
-                    { field: "sector", op: "eq", value: "Energy" },
-                    { field: "stage", op: "in", value: "Lead,Qualified,Proposal,Negotiation,On Hold" },
-                  ],
-                  group_by: "stage",
-                  metrics: ["count", "sum:value"],
-                },
-              },
-            },
-          ],
-        },
-      },
-    ],
+    candidates: [{ content: { parts: [{ functionCall: { name: "query_board", args: {
+      board: "deals",
+      filters: [{ field: "sector", op: "eq", value: "energy" }, { field: "status", op: "eq", value: "Open" }],
+      metrics: ["count", "sum:value"],
+    } } }] } }],
   },
-  // Turn 2: it narrates.
-  { candidates: [{ content: { parts: [{ text: "**Energy pipeline: 2 open deals worth 2,050,000.**\n\n*Based on 8 deals.*" }] } }] },
+  { candidates: [{ content: { parts: [{ text: "**Energy pipeline: 3 open deals.**\n\n*Deal value is sparsely filled.*" }] } }] },
 ];
 
-/* ----------------------------------------------------------- fetch stub */
+/* -------------------------------------------------------------- fetch stub */
 
 const realFetch = globalThis.fetch;
 let mondayCalls = 0;
@@ -110,32 +96,24 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 
   if (url.includes("api.monday.com")) {
     mondayCalls++;
-    const query = String(JSON.parse(String(init?.body ?? "{}")).query ?? "");
-    const vars = JSON.parse(String(init?.body ?? "{}")).variables ?? {};
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const query = String(body.query ?? "");
 
     if (query.includes("items_page")) {
-      const isDeals = String(vars.boardId) === "101";
-      return json({
-        data: {
-          boards: [{ items_page: isDeals ? itemsPage(DEAL_COLUMNS, DEAL_ROWS, "d") : itemsPage(WO_COLUMNS, WO_ROWS, "w") }],
-        },
-      });
+      const src = String(body.variables?.boardId) === "101" ? DEALS : WORK;
+      return json({ data: { boards: [{ items_page: { cursor: null, items: src.items } }] } });
     }
-
     return json({
       data: {
         boards: [
-          { id: "101", name: "Deal Funnel", items_count: DEAL_ROWS.length, columns: DEAL_COLUMNS },
-          { id: "202", name: "Work Order Tracker", items_count: WO_ROWS.length, columns: WO_COLUMNS },
+          { id: "101", name: "Deal Funnel", items_count: DEALS.items.length, columns: DEALS.columns },
+          { id: "202", name: "Work Order Tracker", items_count: WORK.items.length, columns: WORK.columns },
         ],
       },
     });
   }
 
-  if (url.includes("generativelanguage.googleapis.com")) {
-    return json(LLM_SCRIPT[Math.min(llmTurn++, LLM_SCRIPT.length - 1)]);
-  }
-
+  if (url.includes("generativelanguage.googleapis.com")) return json(LLM_SCRIPT[Math.min(llmTurn++, LLM_SCRIPT.length - 1)]);
   return realFetch(input as RequestInfo, init);
 }) as typeof fetch;
 
@@ -162,85 +140,104 @@ console.log("\n─── board discovery ───");
 const overview = await boardsOverview();
 check("both boards resolved", (overview.datasets as Array<Record<string, unknown>>).map((d) => d.monday_board), ["Deal Funnel", "Work Order Tracker"]);
 
-console.log("\n─── column mapping (headers deliberately do not match field names) ───");
+console.log("\n─── column mapping (real headers, none of which match field names) ───");
 const deals = await getDataset("deals");
 const map = Object.fromEntries(deals.mapping.map((m) => [m.field, m.columnTitle]));
-for (const m of deals.mapping) console.log(`   ${m.field.padEnd(13)} <- "${m.columnTitle}" (${m.columnType}, ${m.confidence}%)`);
-check("client mapped", map.client, "Customer Name");
-check("sector mapped from 'Industry'", map.sector, "Industry");
-check("stage mapped from 'Funnel Stage'", map.stage, "Funnel Stage");
-check("value mapped from 'Deal Value (INR)'", map.value, "Deal Value (INR)");
-check("close_date mapped from 'Expected Closure'", map.close_date, "Expected Closure");
-check("owner mapped from 'Sales Rep'", map.owner, "Sales Rep");
-check("unrelated column left unmapped", deals.unmappedColumns.map((c) => c.title), ["Internal Ref"]);
+for (const m of deals.mapping) console.log(`   ${m.field.padEnd(18)} <- "${m.columnTitle}" (${m.confidence}%)`);
+check("client <- Client Code", map.client, "Client Code");
+check("owner <- Owner code", map.owner, "Owner code");
+check("sector <- Sector/service", map.sector, "Sector/service");
+check("status <- Deal Status", map.status, "Deal Status");
+check("stage <- Deal Stage", map.stage, "Deal Stage");
+check("value <- Masked Deal value", map.value, "Masked Deal value");
+check("close_date <- Tentative Close Date", map.close_date, "Tentative Close Date");
+check("actual_close_date <- Close Date (A)", map.actual_close_date, "Close Date (A)");
+check("probability <- Closure Probability", map.probability, "Closure Probability");
+check("product <- Product deal", map.product, "Product deal");
+check("created_date <- Created Date", map.created_date, "Created Date");
 
 const wo = await getDataset("work_orders");
 const wmap = Object.fromEntries(wo.mapping.map((m) => [m.field, m.columnTitle]));
-check("wo status mapped from 'Execution Status'", wmap.status, "Execution Status");
-check("wo value mapped from 'Billing Amount'", wmap.value, "Billing Amount");
-check("wo sector mapped from 'Vertical'", wmap.sector, "Vertical");
-check("wo end_date mapped from 'Target Date'", wmap.end_date, "Target Date");
+for (const m of wo.mapping) console.log(`   [wo] ${m.field.padEnd(14)} <- "${m.columnTitle}" (${m.confidence}%)`);
+check("wo status <- Execution Status", wmap.status, "Execution Status");
+check("wo value <- Amount excl GST", wmap.value, "Amount in Rupees (Excl of GST) (Masked)");
+check("wo billed <- Billed Value excl GST", wmap.billed, "Billed Value in Rupees (Excl of GST.) (Masked)");
+check("wo collected <- Collected Amount", wmap.collected, "Collected Amount in Rupees (Incl of GST.) (Masked)");
+check("wo unbilled <- Amount to be billed", wmap.unbilled, "Amount to be billed in Rs. (Exl. of GST) (Masked)");
+check("wo receivable <- Amount Receivable", wmap.receivable, "Amount Receivable (Masked)");
+check("wo end_date <- Probable End Date", wmap.end_date, "Probable End Date");
+check("wo owner <- BD/KAM Personnel code", wmap.owner, "BD/KAM Personnel code");
+check("wo service <- Type of Work", wmap.service, "Type of Work");
+check("wo quantity <- Quantities as per PO", wmap.quantity_po, "Quantities as per PO");
 
-console.log("\n─── normalization of messy cells ───");
-const byRef = Object.fromEntries(deals.rows.map((r) => [r.raw["Internal Ref"], r]));
-check("indian grouping parsed", byRef["D-01"].f.value, 1200000);
-check("rupee + lakhs parsed", byRef["D-02"].f.value, 850000);
-check("dollar millions parsed", byRef["D-06"].f.value, 1200000);
-check("'TBD' becomes null", byRef["D-07"].f.value, null);
-check("solar EPC -> Energy", byRef["D-01"].f.sector, "Energy");
-check("renewables -> Energy", byRef["D-02"].f.sector, "Energy");
-check("wind -> Energy", byRef["D-08"].f.sector, "Energy");
-check("'closed lost' -> Lost", byRef["D-04"].f.stage, "Lost");
-check("day-first date", byRef["D-01"].f.close_date, "2026-07-15");
-check("dd-Mon-yyyy date", byRef["D-03"].f.close_date, "2026-07-10");
-check("quarter date flagged and coerced", byRef["D-05"].f.close_date, "2026-07-01");
-check("'N/A' date becomes null", byRef["D-07"].f.close_date, null);
-check("lossy parse recorded on the row", byRef["D-05"].issues.length > 0, true);
+console.log("\n─── messy-data handling ───");
+check("repeated header row dropped", [deals.droppedRows, deals.rowCount], [1, 9]);
+check("drop is reported", deals.quality.warnings.some((w) => w.includes("repeated header")), true);
 
-console.log("\n─── data quality ───");
-check("duplicate client spellings detected", deals.quality.duplicateClients[0].variants.length, 2);
-check("warnings produced", deals.quality.warnings.length > 0, true);
-for (const w of deals.quality.warnings.slice(0, 4)) console.log(`   ! ${w}`);
+const byName = Object.fromEntries(deals.rows.map((r) => [r.name, r]));
+check("board sector vocabulary preserved verbatim", byName["Sasuke"].f.sector, "Renewables");
+check("lettered stage preserved verbatim", byName["Sakura"].f.stage, "F. Negotiations");
+check("probability kept as its High/Medium/Low label", byName["Naruto"].f.probability, "High");
+check("blank value stays null", byName["Subaru"].f.value, null);
 
-console.log("\n─── query engine over the real dataset ───");
+const woByName = Object.fromEntries(wo.rows.map((r) => [r.name, r]));
+check("quantity with a unit is split", [woByName["Scooby-Doo"].f.quantity_po, woByName["Scooby-Doo"].f.quantity_po_unit], [5360, "HA"]);
+check("quantity with no space", woByName["Alphonse"].f.quantity_po, 3956);
+check("negative quantity parses", woByName["Subaru"].f.quantity_po, -1309.85);
+check("prose quantity is null and flagged", [woByName["Sakura"].f.quantity_po, woByName["Sakura"].issues.length > 0], [null, true]);
+check("NONE is kept as a real answer", woByName["Scooby-Doo"].f.platform, "NONE");
+
+console.log("\n─── vocabulary discovered from the board ───");
+console.log("   sectors:", deals.distinct.sector?.map((v) => v.value).join(", "));
+console.log("   statuses:", deals.distinct.status?.map((v) => v.value).join(", "));
+console.log("   wo statuses:", wo.distinct.status?.map((v) => v.value).join(", "));
+check("sector vocabulary indexed", deals.distinct.sector?.length, 6);
+check("deal status vocabulary indexed", deals.distinct.status?.map((v) => v.value).sort(), ["Dead", "On Hold", "Open", "Won"]);
+
+console.log("\n─── founder wording resolved onto board values ───");
 const energy = (await executeTool("query_board", {
   board: "deals",
-  filters: [
-    { field: "sector", op: "eq", value: "Energy" },
-    { field: "stage", op: "in", value: "Lead,Qualified,Proposal,Negotiation,On Hold" },
-  ],
+  filters: [{ field: "sector", op: "eq", value: "energy" }, { field: "status", op: "eq", value: "Open" }],
   metrics: ["count", "sum:value"],
 })) as Record<string, any>;
-check("open energy deals", energy.matched, 2);
-check("open energy value", energy.totals.sum_value, 2050000);
+console.log(`   "energy" -> ${JSON.stringify(energy.resolved_values?.[0]?.board_values_used)}`);
+check("energy resolves to Renewables + Powerline", energy.resolved_values?.[0]?.board_values_used, ["Renewables", "Powerline"]);
+check("open energy deals", energy.matched, 3);
 
-const won = (await executeTool("query_board", { board: "deals", filters: [{ field: "stage", op: "eq", value: "Won" }], metrics: ["count", "sum:value"] })) as Record<string, any>;
-check("won deals across spellings", won.matched, 2);
-check("won value", won.totals.sum_value, 6700000);
+const negotiation = (await executeTool("query_board", { board: "deals", filters: [{ field: "stage", op: "eq", value: "negotiation" }], metrics: ["count"] })) as Record<string, any>;
+check("'negotiation' finds 'F. Negotiations'", negotiation.matched, 1);
 
-const late = (await executeTool("query_board", {
-  board: "work_orders",
-  filters: [
-    { field: "status", op: "not_in", value: "Completed,Cancelled" },
-    { field: "end_date", op: "before", value: "2026-08-30" },
-  ],
-  metrics: ["count"],
-})) as Record<string, any>;
-check("overdue work orders", late.matched, 1);
+const running = (await executeTool("query_board", { board: "work_orders", filters: [{ field: "status", op: "in", value: "in progress" }], metrics: ["count"] })) as Record<string, any>;
+check("'in progress' finds Ongoing + Executed until current month", running.matched, 2);
+
+const nonsense = (await executeTool("query_board", { board: "deals", filters: [{ field: "sector", op: "eq", value: "banking" }], metrics: ["count"] })) as Record<string, any>;
+check("unknown value lists what does exist", nonsense.caveats.some((c: string) => c.includes("Renewables")), true);
+
+const distinct = (await executeTool("distinct_values", { board: "work_orders", field: "invoice_status" })) as Record<string, any>;
+check("distinct_values lists real values", distinct.values.map((v: any) => v.value).sort(), ["Fully Billed", "Not billed yet", "Partially Billed"]);
+
+console.log("\n─── aggregation ───");
+const byStatus = (await executeTool("query_board", { board: "deals", group_by: "status", metrics: ["count", "sum:value"], sort: "count desc" })) as Record<string, any>;
+check("groups sorted descending", byStatus.groups.map((g: any) => g.count), [4, 2, 2, 1]);
+
+const cash = (await executeTool("query_board", { board: "work_orders", metrics: ["sum:value", "sum:billed", "sum:collected", "sum:receivable"] })) as Record<string, any>;
+check("order book totalled", cash.totals.sum_value, 2601312.08);
+check("receivable totalled", cash.totals.sum_receivable, 2445233.22);
+check("sparse billed column caveated", cash.caveats.some((c: string) => c.includes('no "billed" value')), true);
 
 console.log("\n─── leadership brief ───");
-const brief = (await executeTool("leadership_brief", { timeframe: "this quarter" })) as Record<string, any>;
-check("brief has pipeline", typeof brief.pipeline?.open_deals, "number");
-check("brief has win rate key", "win_rate_pct" in brief.conversion, true);
-check("brief has delivery", typeof brief.delivery?.active_work_orders, "number");
-check("brief carries caveats", Array.isArray(brief.data_caveats), true);
-check("cross-board sector view", Array.isArray(brief.sector_pipeline_vs_delivery), true);
+const brief = (await executeTool("leadership_brief", { timeframe: "FY26" })) as Record<string, any>;
+check("brief pipeline uses Open status", brief.pipeline?.open_deals, 4);
+check("brief has a win rate", typeof brief.conversion?.win_rate_pct, "number");
+check("brief has a cash section", typeof brief.cash?.receivable_outstanding, "number");
+check("brief carries caveats", Array.isArray(brief.data_caveats) && brief.data_caveats.length > 0, true);
+check("brief compares pipeline to delivery per sector", Array.isArray(brief.sector_pipeline_vs_delivery), true);
 
 console.log("\n─── full agent loop ───");
 const events: string[] = [];
 for await (const ev of runAgent([{ role: "user", content: "How's our pipeline looking for the energy sector this quarter?" }])) {
   events.push(ev.type);
-  if (ev.type === "tool") console.log(`   → tool ${ev.name}(${JSON.stringify(ev.args).slice(0, 90)}…)`);
+  if (ev.type === "tool") console.log(`   → ${ev.name}(${JSON.stringify(ev.args).slice(0, 100)}…)`);
   if (ev.type === "tool_result") console.log(`   ← ${ev.name}: ${ev.summary}`);
   if (ev.type === "answer") console.log(`   ✎ ${ev.text.replace(/\n/g, " ")}`);
   if (ev.type === "error") console.log(`   ! ${ev.text}`);

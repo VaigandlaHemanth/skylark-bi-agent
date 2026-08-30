@@ -2,13 +2,15 @@
 
 ## 1. Assumptions
 
-**About the data.** I designed against the *shape* the brief describes rather than against fixed headers: a sales funnel with client / sector / stage / value / expected-close, and an execution tracker with client / sector / status / value / start / end. I never assume the import produced particular column names — the app reads the board's real schema and maps it. That was the single most important assumption to avoid making, because the spreadsheets get imported by someone else and column titles will not match mine.
+**About the data.** I built schema discovery before I had the spreadsheets, so the app assumes nothing about column names — it reads the board's real schema and maps it. When the real export arrived (344 deals × 12 columns, 176 work orders × 38 columns) all 12 deal columns and 33 of 38 work-order columns mapped without a code change. The five that did not are entirely empty in the export.
 
-**About the questions.** A founder asks in outcomes, not fields: *"how's the energy pipeline"*, *"are we slipping"*. So the agent gets business vocabulary as first-class concepts — "pipeline" means open stages, not all deals; "this quarter" means a resolved date range, stated back to the user.
+**About vocabulary.** The boards carry Skylark's own taxonomy: sectors are `Renewables / Mining / Railways / Powerline / DSP / Tender / Others`, and Deal Stage is a lettered ladder `A. Lead Generated → O. Not Relevant at all`. I assumed a founder would ask in plain English ("energy", "negotiation") and expect the answer to still line up with what monday shows. See §2.
 
-**About units.** Deal values are reported at the magnitude stored on the board. I do not infer a currency or convert lakhs/crores into a display format, because guessing wrong on a founder-facing number is worse than being unitless. Multipliers written *inside* a cell (`1.2M`, `12 lakhs`) *are* expanded, and the expansion is flagged per row.
+**About units.** Values are masked and scaled — the work order board mixes `264398.08` with `1.2332` in the same column. I report magnitudes exactly as stored and never attach a currency symbol, because a wrong unit on a founder-facing number is worse than an unadorned one. Multipliers written *inside* a cell (`12 lakhs`, `$1.2M`) are expanded, and the expansion is recorded per row.
 
-**About quarters.** Default is the **calendar** quarter. Skylark is an Indian company, so a financial-year reading (Apr–Mar) is plausible — but silently switching would be worse than stating the assumption. Both work: "this quarter" is calendar, "FY26" or "this financial year" is Apr–Mar. The agent always says which it used.
+**About quarters.** Default is the **calendar** quarter; `FY26` and "this financial year" give the Indian Apr–Mar year. Silently switching would be worse than stating the assumption, so the agent always says which it used.
+
+**About "revenue".** It is genuinely ambiguous across these two boards — won deal value (sales) or billed/collected work-order value (finance). The agent picks the likelier reading, says which, and offers the other in one clause.
 
 **About scope.** monday.com access is read-only, as specified. Nothing writes back.
 
@@ -17,65 +19,75 @@
 ## 2. Key trade-offs
 
 ### The model never does arithmetic
-The LLM emits a structured query (filters, group-by, metrics); a deterministic engine computes it. **Cost:** the agent can only answer questions expressible in that DSL, and a genuinely novel calculation needs new tool code. **Benefit:** no hallucinated figures, ever, and every number is reproducible and auditable. For a founder-facing BI tool, a wrong number is worse than a missing one — that trade was not close.
+The LLM emits a structured query; a deterministic engine computes it. **Cost:** the agent can only answer questions expressible in that DSL, and a genuinely novel calculation needs new tool code. **Benefit:** no hallucinated figures, and every number is reproducible and auditable. For a founder-facing BI tool that trade was not close.
+
+### Preserve the board's vocabulary; translate the user's words instead
+My first design canonicalised values at ingest — `Renewables → Energy`, `F. Negotiations → Negotiation`. The real data showed that is actively harmful: it destroys Skylark's own taxonomy, makes totals disagree with monday, and silently drops values that fit no bucket (`DSP`, `Tender`). So values are stored verbatim and the concept tables run the other way, at query time: the user's word is resolved onto the values the board holds (`"energy"` → `Renewables + Powerline`), and the resolution is reported back in the answer.
+
+**Cost:** a resolution step on every text filter, and matching precedence (exact → substring → concept) that occasionally over-matches — asking for "lead" also returns "Sales Qualified Leads". **Benefit:** answers always reconcile with the board, unmapped values survive, and a wrong interpretation is visible rather than silent. The over-match is the right failure direction: it is stated, so the user can narrow it.
 
 ### Fuzzy column mapping over a hardcoded schema
-Columns are matched to canonical fields by synonym scoring, boosted by monday's own column type (`numbers`, `date`, `status`). **Cost:** ~120 lines of scoring logic, and a mis-map is possible. **Benefit:** the app survives whatever the import produced, and the mapping is exposed to the user (`data_quality` shows `value ← "Deal Value (INR)" · 94% match`), so a mis-map is visible rather than silent. A hardcoded schema would have been faster to write and would have broken on someone else's import.
+Columns are matched by synonym scoring boosted by monday's column type. **Cost:** ~130 lines of scoring, and a mis-map is possible. **Benefit:** it survived first contact with a 38-column sheet I had never seen, and the mapping is exposed (`data_quality` shows `receivable ← "Amount Receivable (Masked)" · 100%`), so a mis-map is visible.
 
 ### Column-level date disambiguation
-`03/04/2026` cannot be resolved from one row. I scan the whole column: if *any* value has a first component above 12, the column is day-first. Only if the column is entirely ambiguous do I default to day-first — **and surface it as a caveat**. **Cost:** a full pass over the column before parsing. **Benefit:** it is correct for most real columns instead of guessing on every row.
+`03/04/2026` cannot be resolved from one row. I scan the whole column: if *any* value has a first component above 12, the column is day-first. Only if the column is entirely ambiguous do I default to day-first — and surface it as a caveat.
 
 ### Caveats as data, not prose
-Every query result carries a `caveats[]` array built by the engine (nulls excluded from sums, blank groups, unmatched filters, low fill rates). The model is instructed to fold the material ones into its answer. **Cost:** answers are longer. **Benefit:** the agent cannot quietly present a number computed on 55%-complete data — the caveat is generated whether or not the model thinks to mention it.
+Every result carries a `caveats[]` array built by the engine (nulls excluded from sums, blank groups, unresolved filter terms, dropped header rows, low fill rates). The model is told to fold the material ones in. **Cost:** longer answers. **Benefit:** with `Masked Deal value` only 48% filled, this is the difference between a defensible number and a misleading one — and the caveat is generated whether or not the model thinks to mention it.
 
 ### Pluggable LLM, free tier by default
-Gemini (free tier), Groq, or Anthropic, selected by whichever key is present. **Cost:** an adapter layer instead of one SDK; the free models are weaker at multi-step tool use. **Benefit:** the hosted demo runs with no billing account, which is what actually makes it testable by a reviewer. The narrow tool DSL — string-valued filters, no nested unions — was deliberately shaped so a free-tier model can drive it reliably.
+Gemini (free tier), Groq, or Anthropic, chosen by whichever key is present. **Cost:** an adapter layer instead of one SDK; free models are weaker at multi-step tool use. **Benefit:** the hosted demo runs with no billing account, which is what makes it testable by a reviewer. The tool DSL was deliberately kept string-valued and shallow so a free-tier model can drive it, and the board's actual vocabulary is injected into the system prompt so the model rarely has to guess a value at all.
 
 ### 5-minute cache instead of per-query fetching
-Both boards are pulled whole and cached in-process for 5 minutes. **Cost:** answers can be up to 5 minutes stale, and the cache dies on a serverless cold start. **Benefit:** a multi-tool question makes one API round trip instead of six, which keeps responses inside a serverless timeout and well inside monday's rate limits. At board sizes of a few hundred rows this is clearly right; at 100k rows it would not be.
+Both boards are pulled whole and cached in-process. **Cost:** answers can be up to 5 minutes stale; the cache dies on a serverless cold start. **Benefit:** a multi-tool question makes one API round trip instead of six, which keeps responses inside a serverless timeout and well inside monday's rate limits. At 520 rows this is clearly right; at 100k rows it would not be.
 
 ### Next.js single deployable
-One app, one deploy, SSE streaming so the user sees each tool call as it happens rather than a 20-second blank. **Cost:** no separate API surface for other consumers. **Benefit:** it meets "testable without local setup" with one `vercel` command.
+One app, one deploy, SSE streaming so the user watches each tool call rather than a 20-second blank. **Cost:** no separate API for other consumers. **Benefit:** meets "testable without local setup" with one `vercel` command.
 
 ---
 
 ## 3. How I interpreted "help prepare data for leadership updates"
 
-I read it as: **a founder should not have to ask six questions to write the weekly update.**
+**A founder should not have to ask six questions to write the weekly update.**
 
-So `leadership_brief` is one tool call that assembles the whole snapshot deterministically:
+`leadership_brief` is one tool call that assembles the whole snapshot deterministically:
 
-- **Pipeline** — open deals, open value, average deal size, breakdown by stage and by sector, largest open deals
-- **Conversion** — won vs lost count and value in the window, win rate (or an explicit "cannot be computed" when nothing closed)
-- **Risk** — *slipping deals* (open, but the expected close date has passed) and *overdue work* (not Completed/Cancelled, past the due date), each with named examples
-- **Delivery** — active work orders, status mix, completed in window
-- **Cross-board signal** — pipeline value vs delivered value per sector, which is the thing neither board can show alone: where sales is landing work the delivery side is not yet reflecting
-- **Data caveats** — deduplicated across every sub-query, to be used as a footnote
+- **Pipeline** — open deals (Deal Status = Open), open value, average size, split by stage, by sector and by closure probability, plus the largest open deals
+- **Conversion** — won vs lost in the window, win rate, or an explicit "cannot be computed" when nothing closed
+- **Delivery** — active work orders, execution-status mix, completed in window
+- **Cash** — order book, billed, collected, still-to-bill, receivable outstanding, and the top receivable accounts. This was not in my original design; the work order board turned out to be as much an AR ledger as a delivery tracker, and receivables are exactly what a founder asks about
+- **Risk** — *slipping deals* (open, expected close date passed) and *overdue delivery* (not complete, end date passed), each with named examples
+- **Cross-board** — deal value vs work-order value per sector: where sales is landing work the delivery side is not yet reflecting
+- **Caveats** — deduplicated across every sub-query, for the footnote
 
-The model's job is only to narrate it: headline numbers, what changed, risks, one recommended action, caveats in a footnote. The structure is fixed in code so the update is the same shape every week — which is what makes it comparable week over week.
+The model only narrates: headline numbers, what stands out, risks, one recommended action. The structure is fixed in code so the update has the same shape every week, which is what makes it comparable.
 
 ---
 
 ## 4. What I would do differently with more time
 
-1. **Confidence-scored entity resolution.** Client names are currently normalised with a noise-word key (`Adani Green Pvt Ltd` → `adani green`). Real dedup needs fuzzy scoring with a review queue, because collapsing two genuinely different clients is a silent data error.
-2. **Persist the normalised snapshot.** Move the in-process cache to Postgres or Redis with a scheduled sync. That survives cold starts, makes trend questions ("versus last quarter") cheap, and lets me store *when* each row changed — which the boards themselves do not expose.
-3. **Charts.** Some answers are much better as a picture. I would have the agent optionally return a chart spec alongside the prose and render it inline.
-4. **An evaluation set.** ~40 founder questions with expected numeric answers, run on every change. Right now correctness of the *engine* is verifiable by reading it, but correctness of the *agent's tool choices* is not measured. This is the largest gap.
-5. **Monday MCP instead of a hand-rolled client.** I used the GraphQL API directly for full control over pagination, retries and the column-schema read. With more time I would put the official MCP server behind the same tool interface and compare — MCP would reduce the client code, at the cost of less control over exactly what gets fetched.
-6. **Streaming tokens, not just tool events.** The final answer currently arrives in one piece. Per-token streaming would cut perceived latency further.
-7. **Write-back, if it were ever in scope.** It is explicitly not — but the natural next step is "flag these 6 slipping deals in monday" with a confirmation step, never an automatic write.
+1. **An evaluation set.** ~40 founder questions with expected numeric answers, run on every change. The *engine* is covered by 141 automated checks; the *agent's tool choices* are not measured. This is the largest gap.
+2. **Confidence-scored entity resolution.** Client codes are already clean here, but the noise-word key (`Adani Green Pvt Ltd → adani green`) would need fuzzy scoring plus a review queue on real names — collapsing two different clients is a silent data error.
+3. **Persist the normalised snapshot.** Postgres or Redis with a scheduled sync: survives cold starts, makes trend questions ("versus last quarter") cheap, and lets me record *when* each row changed, which the boards do not expose.
+4. **Charts.** Several of these answers are better as a picture. The agent would return a chart spec alongside the prose.
+5. **Reconcile the two boards on deal name.** Both carry a masked deal name; joining them would let the agent follow a single deal from `A. Lead Generated` through to `Collected`, which is the question a founder actually wants answered.
+6. **Monday MCP instead of a hand-rolled client.** I used GraphQL directly for control over pagination, retries and the column-schema read. MCP would reduce client code at the cost of that control.
+7. **Per-token streaming** of the final answer, not just tool events.
 
 ---
 
 ## 5. AI tools used
 
-Claude (Anthropic) via Claude Code, for scaffolding, the normalisation edge cases, and this document. Every architectural decision above — the model-plans/code-computes split, fuzzy column mapping, column-level date disambiguation, caveats-as-data — is mine; the assistant accelerated the writing of them.
+Claude (Anthropic) via Claude Code, for scaffolding, normalisation edge cases, and this document. The architectural decisions — model-plans/code-computes, preserve-board-vocabulary, fuzzy column mapping, column-level date disambiguation, caveats-as-data — are mine; the assistant accelerated writing them.
 
 ## 6. Challenges
 
-**Not having the real spreadsheets while building.** Solved by making schema discovery a runtime feature rather than a build-time assumption. This turned out better than hardcoding would have been.
+**Building before seeing the data.** Solved by making schema discovery a runtime feature. It paid off: the 38-column work-order sheet mapped on first contact.
 
-**Free-tier tool calling.** Gemini's function-declaration schema rejects `additionalProperties` and handles nested unions poorly. I converted schemas at the adapter boundary and kept every filter value a plain string (`"low,high"` for ranges, comma lists for `in`), which is uglier than a typed union but works reliably across all three providers.
+**Getting normalisation backwards.** My first pass rewrote board values into a generic taxonomy. Profiling the real export showed that would have turned a clean 11-value sector list into a lossy 6-value one. Inverting the direction — translate the question, not the data — was the single most important correction in the build.
 
-**Deciding what counts as an error worth showing.** Early versions surfaced every parse note, which buried the answer. The fix was two tiers: per-row `issues` (available via `sample_rows` when you go looking) and aggregate `caveats` (surfaced in the answer only when they materially affect the number).
+**The two `status` fields.** Both boards have a field the app calls `status`, meaning completely different things (Open/Won/Dead vs Completed/Ongoing/Not Started). The concept lookup was keyed by field name alone, so work-order queries were silently resolved against the *deals* vocabulary — "in progress" matched `Ongoing` but missed `Executed until current month`. The end-to-end test caught it; the lookup is now per board.
+
+**Free-tier tool calling.** Gemini's function-declaration schema rejects `additionalProperties` and handles nested unions poorly. Schemas are converted at the adapter boundary and every filter value is a plain string (`"low,high"` for ranges, comma lists for `in`) — uglier than a typed union, but reliable across all three providers.
+
+**Deciding what counts as an error worth showing.** Early versions surfaced every parse note and buried the answer. The fix was two tiers: per-row `issues` (available via `sample_rows` when you go looking) and aggregate `caveats` (surfaced only when they materially affect the number).

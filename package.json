@@ -9,7 +9,8 @@
     "inspect:boards": "node scripts/inspect-boards.mjs",
     "selftest": "tsx scripts/selftest.ts",
     "e2etest": "tsx scripts/e2etest.mts",
-    "test": "npm run selftest && npm run e2etest"
+    "test": "npm run selftest && npm run e2etest",
+    "verify:csv": "tsx scripts/verify-real-data.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",

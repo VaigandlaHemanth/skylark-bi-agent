@@ -1,11 +1,19 @@
 /**
  * Cleaning layer for real-world messy board data.
- * Every coercion either succeeds or records a note - nothing is silently dropped.
+ *
+ * Design note: the boards carry Skylark's OWN vocabulary ("Renewables",
+ * "F. Negotiations", "Executed until current month"). Rewriting those into a
+ * generic taxonomy would destroy information and make answers disagree with
+ * what a founder sees in monday.com. So values are preserved verbatim, and the
+ * concept tables below are used the other way round - to expand the *user's*
+ * phrasing ("energy sector") onto the values the board actually uses.
  */
 
 const BLANKS = new Set([
-  "", "-", "--", "n/a", "na", "none", "null", "nil", "tbd", "tba", "?",
-  "unknown", "not available", "#n/a", "pending", "not applicable",
+  "", "-", "--", "n/a", "na", "null", "nil", "tbd", "tba", "?",
+  "unknown", "not available", "#n/a", "not applicable", "#value!", "#ref!",
+  // "none" is deliberately NOT here: on these boards it is a real answer
+  // ("no Skylark platform in this deal"), not an empty cell.
 ]);
 
 export function isBlank(raw: string | null | undefined): boolean {
@@ -15,6 +23,11 @@ export function isBlank(raw: string | null | undefined): boolean {
 export function cleanText(raw: string | null | undefined): string | null {
   if (isBlank(raw)) return null;
   return String(raw).replace(/\s+/g, " ").trim();
+}
+
+/** Case/space-insensitive key so "Mining", "mining " and "MINING" group together. */
+export function normKey(raw: string | null | undefined): string {
+  return String(raw ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /* ------------------------------------------------------------------ numbers */
@@ -31,7 +44,7 @@ const UNIT_MULTIPLIERS: Array<[RegExp, number]> = [
   [/\d\s*(?:thousands?|k)\b/i, 1e3],
 ];
 
-/** "Rs 1,20,000", "$1.2M", "45k", "(500)", "12 lakhs" -> number */
+/** "12,00,000", "Rs 45,000", "$1.2M", "45k", "(500)", "12 lakhs" -> number */
 export function parseNumber(raw: string | null | undefined): { value: number | null; note?: string } {
   if (isBlank(raw)) return { value: null };
   const s = String(raw).trim();
@@ -45,7 +58,6 @@ export function parseNumber(raw: string | null | undefined): { value: number | n
     }
   }
 
-  // Keep digits and one decimal point; drop currency symbols, codes, separators.
   const digits = s.replace(/[()]/g, "").replace(/[^0-9.]/g, "");
   if (!digits || digits === ".") return { value: null, note: `could not read a number from "${s}"` };
 
@@ -60,10 +72,26 @@ export function parseNumber(raw: string | null | undefined): { value: number | n
     : { value, note: `read "${s}" as ${Math.round(value).toLocaleString("en-IN")}` };
 }
 
+/**
+ * Quantity cells mix a number with a unit: "5360 HA", "2057 Acr", "7 mines",
+ * "24 Months", "45days", or a bare "1". Returns both parts so the number is
+ * still aggregatable and the unit is not lost.
+ */
+export function parseQuantity(raw: string | null | undefined): { value: number | null; unit: string | null; note?: string } {
+  if (isBlank(raw)) return { value: null, unit: null };
+  const s = String(raw).trim();
+  const m = s.match(/^\s*(-?[\d,]*\.?\d+)\s*([A-Za-z][A-Za-z .]*)?\s*$/);
+  if (!m) return { value: null, unit: null, note: `could not read a quantity from "${s}"` };
+  const value = Number(m[1].replace(/,/g, ""));
+  const unit = m[2] ? m[2].trim() : null;
+  if (!Number.isFinite(value)) return { value: null, unit, note: `could not read a quantity from "${s}"` };
+  return { value, unit, ...(unit ? { note: `"${s}" is ${value} in units of "${unit}"` } : {}) };
+}
+
 export function parsePercent(raw: string | null | undefined): number | null {
   const { value } = parseNumber(raw);
   if (value == null) return null;
-  return value > 1 && value <= 100 ? value / 100 : value; // accept both 60 and 0.6
+  return value > 1 && value <= 100 ? value / 100 : value;
 }
 
 /* -------------------------------------------------------------------- dates */
@@ -104,7 +132,7 @@ export function detectDayOrder(values: Array<string | null | undefined>): { orde
 
   if (firstOver12 > 0 && secondOver12 === 0) return { order: "dmy", ambiguous: false };
   if (secondOver12 > 0 && firstOver12 === 0) return { order: "mdy", ambiguous: false };
-  return { order: "dmy", ambiguous: seen > 0 }; // default to day-first (IN/EU convention)
+  return { order: "dmy", ambiguous: seen > 0 };
 }
 
 /** Returns an ISO date (YYYY-MM-DD) or null, plus a note when the read was lossy. */
@@ -116,13 +144,11 @@ export function parseDate(
   const s = String(raw).trim();
   let m: RegExpMatchArray | null;
 
-  // 2026-07-15 / 2026/07/15
   if ((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/))) {
     const v = iso(+m[1], +m[2], +m[3]);
     if (v) return { value: v };
   }
 
-  // 15/07/2026 or 07/15/2026
   if ((m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/))) {
     const a = +m[1];
     const b = +m[2];
@@ -131,7 +157,6 @@ export function parseDate(
     if (v) return { value: v };
   }
 
-  // 15-Jul-2026, 15 July 26
   if ((m = s.match(/^(\d{1,2})[\s\-.]+([A-Za-z]{3,9})[\s\-.,]+(\d{2,4})$/))) {
     const mo = MONTHS[m[2].toLowerCase()];
     if (mo) {
@@ -140,7 +165,6 @@ export function parseDate(
     }
   }
 
-  // Jul 15, 2026 / July 15 2026
   if ((m = s.match(/^([A-Za-z]{3,9})[\s\-.]+(\d{1,2})[\s,.]+(\d{2,4})$/))) {
     const mo = MONTHS[m[1].toLowerCase()];
     if (mo) {
@@ -149,7 +173,6 @@ export function parseDate(
     }
   }
 
-  // Q3 2026 / 2026-Q3 -> first day of the quarter, flagged as low precision
   const qFirst = s.match(/^Q([1-4])[\s\-]*(\d{4})$/i);
   const qLast = s.match(/^(\d{4})[\s\-]*Q([1-4])$/i);
   if (qFirst || qLast) {
@@ -158,13 +181,16 @@ export function parseDate(
     return { value: iso(y, q * 3 - 2, 1), note: `"${s}" is quarter-level only; used the first day of the quarter` };
   }
 
-  // Jul 2026 -> first of month, flagged
   if ((m = s.match(/^([A-Za-z]{3,9})[\s\-.]+(\d{4})$/))) {
     const mo = MONTHS[m[1].toLowerCase()];
     if (mo) return { value: iso(+m[2], mo, 1), note: `"${s}" is month-level only; used the 1st` };
   }
 
-  // Excel serial number (days since 1899-12-30)
+  // A bare month name, as used in the billing-month columns.
+  if (MONTHS[s.toLowerCase()]) {
+    return { value: null, note: `"${s}" is a month name with no year; it cannot be placed on a timeline` };
+  }
+
   if (/^\d{5}(\.\d+)?$/.test(s)) {
     const serial = Number(s);
     if (serial > 20000 && serial < 60000) {
@@ -181,54 +207,79 @@ export function parseDate(
   return { value: null, note: `could not read a date from "${s}"` };
 }
 
-/* ------------------------------------------------------- controlled vocabs */
+/* ----------------------------------------------- concepts for term matching */
 
 export type Vocab = Record<string, string[]>;
 
-export const SECTORS: Vocab = {
-  Energy: ["energy", "power", "renewable", "renewables", "solar", "wind", "hydro", "utility", "utilities", "grid", "transmission", "epc"],
-  "Oil & Gas": ["oil", "gas", "o&g", "petroleum", "refinery", "pipeline", "petrochemical", "lng"],
-  Mining: ["mining", "mines", "mineral", "minerals", "quarry", "coal", "aggregate", "aggregates", "cement", "iron ore"],
-  Infrastructure: ["infra", "infrastructure", "construction", "road", "roads", "highway", "highways", "railway", "railways", "metro", "bridge", "smart city", "urban"],
-  Agriculture: ["agri", "agriculture", "agro", "farming", "farm", "plantation", "crop", "horticulture"],
+/**
+ * Concept -> phrases that mean it. Used ONLY to decide whether a user's word and
+ * a board value refer to the same thing. Board values are never rewritten.
+ */
+export const SECTOR_CONCEPTS: Vocab = {
+  Energy: ["energy", "renewable", "renewables", "solar", "wind", "hydro", "power", "powerline", "power line", "transmission", "grid", "utility", "utilities", "electricity"],
+  Mining: ["mining", "mines", "mine", "mineral", "minerals", "quarry", "coal", "aggregate", "aggregates", "cement", "iron ore", "bauxite"],
+  Infrastructure: ["infra", "infrastructure", "construction", "railway", "railways", "rail", "metro", "road", "roads", "highway", "highways", "bridge", "urban", "smart city", "real estate"],
+  "Oil & Gas": ["oil", "gas", "o&g", "petroleum", "refinery", "petrochemical", "lng"],
+  Manufacturing: ["manufacturing", "factory", "plant", "industrial", "production"],
+  Aviation: ["aviation", "airport", "airports", "airline", "aerospace"],
+  Security: ["security", "surveillance", "defence", "defense", "policing"],
+  Agriculture: ["agri", "agriculture", "agro", "farming", "plantation", "crop", "forestry"],
   Telecom: ["telecom", "telecommunication", "telecommunications", "tower", "towers", "5g", "fiber", "fibre"],
-  Government: ["government", "govt", "public sector", "psu", "municipal", "municipality", "defence", "defense", "state"],
-  "Real Estate": ["real estate", "realty", "property", "township", "housing"],
+  Government: ["government", "govt", "public sector", "psu", "municipal", "municipality"],
   Water: ["water", "irrigation", "canal", "river", "dam", "wastewater"],
-  Logistics: ["logistics", "port", "ports", "warehouse", "warehousing", "supply chain"],
-  Environment: ["environment", "forest", "forestry", "conservation", "climate"],
 };
 
-export const DEAL_STAGES: Vocab = {
-  Lead: ["lead", "leads", "new", "inbound", "enquiry", "inquiry", "prospect", "prospecting", "discovery"],
-  Qualified: ["qualified", "qualification", "qualify", "scoping", "demo", "poc", "pilot"],
-  Proposal: ["proposal", "quote", "quotation", "quoted", "rfp", "rfq", "bid", "tender", "estimate"],
-  Negotiation: ["negotiation", "negotiating", "negotiate", "contract", "legal", "commercials"],
-  Won: ["won", "closed won", "close won", "close-won", "closed-won", "win", "signed", "converted", "booked"],
-  Lost: ["lost", "closed lost", "close lost", "closed-lost", "loss", "rejected", "declined", "no bid"],
-  "On Hold": ["on hold", "hold", "paused", "stalled", "deferred", "postponed", "dormant"],
-  Cancelled: ["cancelled", "canceled", "dropped", "withdrawn", "dead", "abandoned"],
+/** Deal Status on the funnel board: Open / Won / Dead / On Hold. */
+export const DEAL_STATUS_CONCEPTS: Vocab = {
+  Open: ["open", "active", "live", "in play", "pipeline", "in pipeline", "ongoing", "in progress", "pursuing"],
+  Won: ["won", "win", "wins", "closed won", "close won", "converted", "signed", "booked", "successful"],
+  Dead: ["dead", "lost", "closed lost", "close lost", "loss", "rejected", "declined", "dropped", "no bid"],
+  "On Hold": ["on hold", "hold", "paused", "stalled", "deferred", "postponed", "frozen"],
 };
 
-export const WORK_STATUSES: Vocab = {
-  "Not Started": ["not started", "notstarted", "new", "planned", "planning", "yet to start", "scheduled", "backlog", "upcoming"],
-  "In Progress": ["in progress", "inprogress", "progress", "wip", "ongoing", "working", "execution", "executing", "flying", "survey", "processing", "in review", "active"],
-  "On Hold": ["on hold", "hold", "paused", "blocked", "stalled", "waiting", "delayed"],
-  Completed: ["completed", "complete", "done", "delivered", "closed", "finished", "handed over", "signed off"],
+/** Deal Stage on the funnel board is a lettered A-O ladder plus a few strays. */
+export const DEAL_STAGE_CONCEPTS: Vocab = {
+  Lead: ["lead", "leads", "lead generated", "lead generation", "new", "inbound", "enquiry", "inquiry", "prospect", "prospecting", "top of funnel"],
+  Qualified: ["qualified", "sales qualified", "sales qualified leads", "sql", "qualification"],
+  Demo: ["demo", "demo done", "demonstration", "presentation"],
+  Feasibility: ["feasibility", "feasibility study", "assessment"],
+  POC: ["poc", "proof of concept", "pilot", "trial"],
+  Proposal: ["proposal", "proposals", "commercials", "commercials sent", "quote", "quotation", "quoted", "rfp", "rfq", "bid", "tender", "estimate"],
+  Negotiation: ["negotiation", "negotiations", "negotiating", "negotiate", "contracting"],
+  Won: ["won", "project won", "work order received", "wo received", "win", "signed", "converted", "order received"],
+  Invoiced: ["invoice sent", "invoiced", "invoice", "amount accrued", "accrued", "billing"],
+  Completed: ["project completed", "completed", "complete", "delivered", "done", "closed out"],
+  Lost: ["lost", "project lost", "loss", "closed lost", "rejected", "declined"],
+  "On Hold": ["on hold", "projects on hold", "hold", "paused", "stalled", "deferred"],
+  "Not Relevant": ["not relevant", "not relevant at all", "not relevant at the moment", "irrelevant", "disqualified", "junk"],
+};
+
+/** Execution Status on the work order board. */
+export const WORK_STATUS_CONCEPTS: Vocab = {
+  "Partially Complete": ["partial completed", "partially completed", "partially complete", "partial"],
+  Completed: ["completed", "complete", "done", "delivered", "finished", "closed", "handed over", "signed off"],
+  "In Progress": ["ongoing", "in progress", "inprogress", "wip", "executing", "execution", "executed", "executed until current month", "active", "running", "underway"],
+  "Not Started": ["not started", "notstarted", "new", "planned", "planning", "yet to start", "upcoming", "scheduled", "backlog"],
+  "On Hold": ["pause", "paused", "pause / struck", "struck", "stuck", "on hold", "hold", "blocked", "stalled", "suspended"],
+  "Waiting on Client": ["details pending from client", "details pending", "pending from client", "waiting on client", "awaiting client", "client input"],
   Cancelled: ["cancelled", "canceled", "dropped", "terminated", "aborted"],
 };
 
-/** Open (still-live) deal stages, used by pipeline metrics. */
-export const OPEN_STAGES = ["Lead", "Qualified", "Proposal", "Negotiation", "On Hold"];
+export const INVOICE_CONCEPTS: Vocab = {
+  "Partially Billed": ["partially billed", "partial billed", "part billed", "partially"],
+  "Fully Billed": ["fully billed", "billed", "invoiced", "raised"],
+  "Not Billed": ["not billed yet", "not billed", "unbilled", "not billable", "pending billing", "yet to bill"],
+  Stuck: ["stuck", "blocked", "update required", "on hold"],
+};
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Longest-match alias lookup. Unmapped values are kept verbatim and reported. */
-export function canonical(raw: string | null | undefined, vocab: Vocab): { value: string | null; mapped: boolean } {
+/** Which concept does this phrase express? Longest matching alias wins. */
+export function conceptOf(raw: string | null | undefined, vocab: Vocab): string | null {
   const text = cleanText(raw);
-  if (!text) return { value: null, mapped: true };
+  if (!text) return null;
   const hay = text.toLowerCase();
 
   let best: { value: string; len: number } | null = null;
@@ -238,7 +289,44 @@ export function canonical(raw: string | null | undefined, vocab: Vocab): { value
       if (hit && (!best || alias.length > best.len)) best = { value: label, len: alias.length };
     }
   }
-  return best ? { value: best.value, mapped: true } : { value: text, mapped: false };
+  return best ? best.value : null;
+}
+
+/**
+ * Map a word the user typed onto the values a board actually contains.
+ *
+ *   term "energy"  +  board values [Renewables, Mining, Powerline, ...]
+ *     -> ["Renewables", "Powerline"]   via concept "Energy"
+ *
+ * Returns null when the term cannot be resolved, so the caller can fall back to
+ * plain substring matching and say so.
+ */
+export function expandTerm(
+  term: string,
+  values: string[],
+  vocab?: Vocab,
+): { matched: string[]; via: "exact" | "substring" | "concept" } | null {
+  const t = normKey(term);
+  if (!t) return null;
+
+  const exact = values.filter((v) => normKey(v) === t);
+  if (exact.length) return { matched: exact, via: "exact" };
+
+  const sub = values.filter((v) => {
+    const n = normKey(v);
+    return n.includes(t) || (t.length > 3 && t.includes(n));
+  });
+  if (sub.length) return { matched: sub, via: "substring" };
+
+  if (vocab) {
+    const concept = conceptOf(term, vocab);
+    if (concept) {
+      const byConcept = values.filter((v) => conceptOf(v, vocab) === concept);
+      if (byConcept.length) return { matched: byConcept, via: "concept" };
+    }
+  }
+
+  return null;
 }
 
 const COMPANY_NOISE =

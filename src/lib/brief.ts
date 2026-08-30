@@ -3,23 +3,34 @@
  *
  * Interpretation: a founder should not have to ask six questions to build a
  * weekly update. This assembles the whole exec snapshot in one deterministic
- * pass - pipeline, conversion, delivery, risk, and the data caveats that belong
- * in a footnote - and hands it to the model to narrate.
+ * pass - pipeline, conversion, delivery, cash, risk, and the data caveats that
+ * belong in a footnote - and hands it to the model to narrate.
  */
 
-import { OPEN_STAGES } from "./normalize";
 import { resolveTimeframe, runQuery } from "./query";
-import { getDataset } from "./store";
+import { getDataset, type Dataset } from "./store";
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
+/** Board values whose concept is X, so the brief works whatever the labels are. */
+function valuesMeaning(ds: Dataset, field: string, ...concepts: string[]): string | null {
+  const pool = ds.distinct[field];
+  if (!pool) return null;
+  const wanted = concepts.map((c) => c.toLowerCase());
+  const hits = pool.map((p) => p.value).filter((v) => wanted.some((w) => v.toLowerCase().includes(w)));
+  return hits.length ? hits.join(",") : null;
+}
 
 export async function leadershipBrief(timeframe = "this quarter", sector?: string) {
   const tf = resolveTimeframe(timeframe);
   const period = tf?.label ?? "all time";
-  const sectorFilter = sector ? [{ field: "sector", op: "contains", value: sector }] : [];
+  const sectorFilter = sector ? [{ field: "sector", op: "eq", value: sector }] : [];
 
   const brief: Record<string, unknown> = {
     period,
     sector_scope: sector ?? "all sectors",
     generated_for: "leadership update",
+    as_of: todayIso(),
   };
   const caveats = new Set<string>();
   const collect = (c: string[]) => c.forEach((x) => caveats.add(x));
@@ -29,57 +40,59 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
     const deals = await getDataset("deals");
     const has = (f: string) => deals.mapping.some((m) => m.field === f);
 
-    const openFilters = [...sectorFilter, ...(has("stage") ? [{ field: "stage", op: "in", value: OPEN_STAGES.join(",") }] : [])];
+    const open = valuesMeaning(deals, "status", "open") ?? "Open";
+    const won = valuesMeaning(deals, "status", "won") ?? "Won";
+    const lost = valuesMeaning(deals, "status", "dead", "lost") ?? "Dead";
 
-    const openPipeline = runQuery(deals, { filters: openFilters, metrics: ["count", "sum:value", "avg:value"] });
-    const byStage = runQuery(deals, { filters: openFilters, group_by: "stage", metrics: ["count", "sum:value"], sort: "sum_value desc" });
-    const bySector = runQuery(deals, { filters: openFilters, group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc", limit: 10 });
-    const topDeals = runQuery(deals, { filters: openFilters, metrics: ["count"], return_rows: true, limit: 8, sort: "sum_value desc" });
+    const openFilters = has("status") ? [...sectorFilter, { field: "status", op: "in", value: open }] : sectorFilter;
 
-    const won = runQuery(deals, { filters: [...sectorFilter, { field: "stage", op: "eq", value: "Won" }], timeframe, metrics: ["count", "sum:value"] });
-    const lost = runQuery(deals, { filters: [...sectorFilter, { field: "stage", op: "eq", value: "Lost" }], timeframe, metrics: ["count", "sum:value"] });
+    const pipeline = runQuery(deals, { filters: openFilters, metrics: ["count", "sum:value", "avg:value"] });
+    const byStage = has("stage") ? runQuery(deals, { filters: openFilters, group_by: "stage", metrics: ["count", "sum:value"], sort: "count desc" }) : null;
+    const bySector = runQuery(deals, { filters: openFilters, group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc", limit: 12 });
+    const byProbability = has("probability") ? runQuery(deals, { filters: openFilters, group_by: "probability", metrics: ["count", "sum:value"], sort: "sum_value desc" }) : null;
+    const biggest = runQuery(deals, { filters: [...openFilters, { field: "value", op: "not_empty" }], metrics: ["count"], return_rows: true, limit: 8, sort: "sum_value desc" });
 
-    const decided = (won.matched ?? 0) + (lost.matched ?? 0);
+    const wonQ = runQuery(deals, { filters: [...sectorFilter, { field: "status", op: "in", value: won }], timeframe, metrics: ["count", "sum:value"] });
+    const lostQ = runQuery(deals, { filters: [...sectorFilter, { field: "status", op: "in", value: lost }], timeframe, metrics: ["count", "sum:value"] });
+    const decided = wonQ.matched + lostQ.matched;
 
-    // Open deals whose expected close date has already passed.
-    const stale = has("close_date")
-      ? runQuery(deals, {
-          filters: [...openFilters, { field: "close_date", op: "before", value: new Date().toISOString().slice(0, 10) }],
-          metrics: ["count", "sum:value"],
-          return_rows: true,
-          limit: 8,
-        })
+    const slipping = has("close_date")
+      ? runQuery(deals, { filters: [...openFilters, { field: "close_date", op: "before", value: todayIso() }], metrics: ["count", "sum:value"], return_rows: true, limit: 8 })
       : null;
 
     brief.pipeline = {
-      open_deals: openPipeline.matched,
-      open_value: openPipeline.totals.sum_value,
-      average_open_deal: openPipeline.totals.avg_value,
-      by_stage: byStage.groups,
+      definition: `deals whose status is one of: ${open}`,
+      open_deals: pipeline.matched,
+      open_value: pipeline.totals.sum_value,
+      average_open_deal: pipeline.totals.avg_value,
+      by_stage: byStage?.groups,
       by_sector: bySector.groups,
-      largest_open_deals: topDeals.rows?.slice(0, 8),
+      by_probability: byProbability?.groups,
+      largest_open_deals: biggest.rows?.slice(0, 8),
     };
+
     brief.conversion = {
       window: period,
-      won_count: won.matched,
-      won_value: won.totals.sum_value,
-      lost_count: lost.matched,
-      lost_value: lost.totals.sum_value,
-      win_rate_pct: decided ? Math.round((won.matched / decided) * 100) : null,
-      note: decided ? undefined : "No deals were marked Won or Lost in this window, so win rate cannot be computed.",
+      won_count: wonQ.matched,
+      won_value: wonQ.totals.sum_value,
+      lost_count: lostQ.matched,
+      lost_value: lostQ.totals.sum_value,
+      win_rate_pct: decided ? Math.round((wonQ.matched / decided) * 100) : null,
+      note: decided ? undefined : "No deals were marked won or lost inside this window, so a win rate cannot be computed for it.",
     };
-    if (stale) {
+
+    if (slipping) {
       brief.slipping_deals = {
-        count: stale.matched,
-        value: stale.totals.sum_value,
-        examples: stale.rows?.slice(0, 8),
-        definition: "Still in an open stage but the expected close date is in the past.",
+        definition: "still open, but the expected close date has already passed",
+        count: slipping.matched,
+        value: slipping.totals.sum_value,
+        examples: slipping.rows?.slice(0, 8),
       };
     }
 
-    collect(openPipeline.caveats);
-    collect(won.caveats);
-    if (stale) collect(stale.caveats);
+    collect(pipeline.caveats);
+    collect(wonQ.caveats);
+    if (slipping) collect(slipping.caveats);
     collect(deals.quality.warnings);
   } catch (err) {
     brief.pipeline = { error: err instanceof Error ? err.message : String(err) };
@@ -89,16 +102,18 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
   try {
     const wo = await getDataset("work_orders");
     const has = (f: string) => wo.mapping.some((m) => m.field === f);
-    const todayIso = new Date().toISOString().slice(0, 10);
 
-    const active = runQuery(wo, { filters: [...sectorFilter, ...(has("status") ? [{ field: "status", op: "in", value: "Not Started,In Progress,On Hold" }] : [])], metrics: ["count", "sum:value"] });
+    const done = valuesMeaning(wo, "status", "complet", "delivered") ?? "Completed";
+    const live = valuesMeaning(wo, "status", "ongoing", "progress", "not started", "executed", "pause", "pending") ?? "Ongoing,Not Started";
+
+    const active = has("status") ? runQuery(wo, { filters: [...sectorFilter, { field: "status", op: "in", value: live }], metrics: ["count", "sum:value"] }) : null;
     const byStatus = runQuery(wo, { filters: sectorFilter, group_by: "status", metrics: ["count", "sum:value"], sort: "count desc" });
-    const delivered = runQuery(wo, { filters: [...sectorFilter, { field: "status", op: "eq", value: "Completed" }], timeframe, metrics: ["count", "sum:value"] });
-    const bySector = runQuery(wo, { filters: sectorFilter, group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc", limit: 10 });
+    const bySector = runQuery(wo, { filters: sectorFilter, group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc", limit: 12 });
+    const delivered = runQuery(wo, { filters: [...sectorFilter, { field: "status", op: "in", value: done }], timeframe, metrics: ["count", "sum:value"] });
 
-    const overdue = has("end_date")
+    const overdue = has("end_date") && has("status")
       ? runQuery(wo, {
-          filters: [...sectorFilter, { field: "status", op: "not_in", value: "Completed,Cancelled" }, { field: "end_date", op: "before", value: todayIso }],
+          filters: [...sectorFilter, { field: "status", op: "not_in", value: done }, { field: "end_date", op: "before", value: todayIso() }],
           metrics: ["count", "sum:value"],
           return_rows: true,
           limit: 8,
@@ -106,22 +121,45 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
       : null;
 
     brief.delivery = {
-      active_work_orders: active.matched,
-      active_value: active.totals.sum_value,
+      active_work_orders: active?.matched,
+      active_order_value: active?.totals.sum_value,
       by_status: byStatus.groups,
       by_sector: bySector.groups,
       completed_in_window: { window: period, count: delivered.matched, value: delivered.totals.sum_value },
     };
+
     if (overdue) {
-      brief.overdue_work = {
+      brief.overdue_delivery = {
+        definition: "not marked complete, and the end date has already passed",
         count: overdue.matched,
         value: overdue.totals.sum_value,
         examples: overdue.rows?.slice(0, 8),
-        definition: "Not Completed or Cancelled, and the end/due date has already passed.",
       };
     }
 
-    collect(active.caveats);
+    /* ------------------------------------------------------------- cash */
+    if (has("receivable") || has("unbilled") || has("billed")) {
+      const cash = runQuery(wo, { filters: sectorFilter, metrics: ["sum:value", "sum:billed", "sum:collected", "sum:unbilled", "sum:receivable"] });
+      const topAR = has("receivable")
+        ? runQuery(wo, { filters: [...sectorFilter, { field: "receivable", op: "gt", value: "0" }], group_by: "client", metrics: ["count", "sum:receivable"], sort: "sum_receivable desc", limit: 8 })
+        : null;
+      const notBilled = has("invoice_status")
+        ? runQuery(wo, { filters: [...sectorFilter, { field: "invoice_status", op: "in", value: valuesMeaning(wo, "invoice_status", "not billed", "partially") ?? "Not billed yet" }], metrics: ["count", "sum:unbilled"] })
+        : null;
+
+      brief.cash = {
+        order_book_value: cash.totals.sum_value,
+        billed_to_date: cash.totals.sum_billed,
+        collected_to_date: cash.totals.sum_collected,
+        still_to_bill: cash.totals.sum_unbilled,
+        receivable_outstanding: cash.totals.sum_receivable,
+        top_receivable_accounts: topAR?.groups,
+        not_fully_billed: notBilled ? { count: notBilled.matched, value: notBilled.totals.sum_unbilled } : undefined,
+      };
+      collect(cash.caveats);
+    }
+
+    if (active) collect(active.caveats);
     collect(delivered.caveats);
     if (overdue) collect(overdue.caveats);
     collect(wo.quality.warnings);
@@ -132,29 +170,38 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
   /* --------------------------------------------------- cross-board signal */
   try {
     const [deals, wo] = await Promise.all([getDataset("deals"), getDataset("work_orders")]);
-    const dealSectors = new Map<string, number>();
-    for (const r of deals.rows) {
-      const s = r.f.sector as string | null;
-      const v = (r.f.value as number | null) ?? 0;
-      if (s) dealSectors.set(s, (dealSectors.get(s) ?? 0) + v);
-    }
-    const woSectors = new Map<string, number>();
-    for (const r of wo.rows) {
-      const s = r.f.sector as string | null;
-      const v = (r.f.value as number | null) ?? 0;
-      if (s) woSectors.set(s, (woSectors.get(s) ?? 0) + v);
-    }
-    brief.sector_pipeline_vs_delivery = [...new Set([...dealSectors.keys(), ...woSectors.keys()])]
-      .map((s) => ({ sector: s, pipeline_value: dealSectors.get(s) ?? 0, delivered_value: woSectors.get(s) ?? 0 }))
-      .sort((a, b) => b.pipeline_value - a.pipeline_value)
-      .slice(0, 10);
+    const tally = (ds: Dataset, valueField: string) => {
+      const m = new Map<string, { value: number; count: number }>();
+      for (const r of ds.rows) {
+        const s = r.f.sector as string | null;
+        if (!s) continue;
+        const cur = m.get(s) ?? { value: 0, count: 0 };
+        cur.value += (r.f[valueField] as number | null) ?? 0;
+        cur.count += 1;
+        m.set(s, cur);
+      }
+      return m;
+    };
+
+    const d = tally(deals, "value");
+    const w = tally(wo, "value");
+    brief.sector_pipeline_vs_delivery = [...new Set([...d.keys(), ...w.keys()])]
+      .map((s) => ({
+        sector: s,
+        deals: d.get(s)?.count ?? 0,
+        deal_value: Math.round(d.get(s)?.value ?? 0),
+        work_orders: w.get(s)?.count ?? 0,
+        work_order_value: Math.round(w.get(s)?.value ?? 0),
+      }))
+      .sort((a, b) => b.deal_value + b.work_order_value - (a.deal_value + a.work_order_value))
+      .slice(0, 12);
   } catch {
-    /* one board already reported its own error above */
+    /* the failing board already reported its own error above */
   }
 
   brief.data_caveats = [...caveats].slice(0, 12);
   brief.instruction_to_agent =
-    "Write this as a short leadership update: 3-5 headline numbers, then what changed and why it matters, then risks (slipping deals, overdue work), then one recommended action. Put data caveats in a short footnote. Round large numbers. Do not invent figures that are not in this payload.";
+    "Write this as a short leadership update: 3-5 headline numbers, then what stands out and why it matters, then risks (slipping deals, overdue delivery, receivables), then one recommended action. Put data caveats in a single short footnote. Round large numbers. Do not invent any figure that is not in this payload.";
 
   return brief;
 }

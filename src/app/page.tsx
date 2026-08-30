@@ -13,15 +13,17 @@ type Health = {
 };
 
 const SUGGESTIONS = [
-  "How's our pipeline looking for the energy sector this quarter?",
-  "Prepare the leadership update for this quarter",
-  "Which sectors are we winning in, and which are stalling?",
-  "Any work orders running late?",
-  "How reliable is the deals data?",
+  "How's our pipeline looking for the energy sector?",
+  "Prepare the leadership update for FY26",
+  "What's our win rate, and where are we losing?",
+  "How much is sitting in receivables, and with whom?",
+  "How much work is overdue?",
+  "How reliable is the deal value column?",
 ];
 
 const TOOL_LABELS: Record<string, string> = {
   list_boards_and_fields: "Reading board schema",
+  distinct_values: "Checking board vocabulary",
   query_board: "Querying monday.com",
   sample_rows: "Inspecting records",
   data_quality: "Checking data quality",

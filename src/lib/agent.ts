@@ -2,7 +2,7 @@
 
 import { complete, LLMError, providerInfo, type ToolCall, type Turn } from "./llm";
 import { MondayError } from "./monday";
-import { boardsOverview } from "./store";
+import { getDataset, type BoardKey } from "./store";
 import { executeTool, TOOL_SPECS } from "./tools";
 
 const MAX_STEPS = 6;
@@ -18,58 +18,73 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 function systemPrompt(schema: string): string {
   const today = new Date().toISOString().slice(0, 10);
-  return `You are the business intelligence agent for Skylark Drones. You answer founder-level questions by reading two live monday.com boards: a sales funnel ("deals") and a project execution tracker ("work_orders").
+  return `You are the business intelligence agent for Skylark Drones, a drone data company. You answer founder-level questions by reading two live monday.com boards: a sales funnel ("deals") and a project execution + billing tracker ("work_orders").
 
 Today's date is ${today}. Resolve relative time expressions against it.
 
-## Live board schema
+## Live board schema and the values actually present
 ${schema}
 
 ## Hard rules
 1. Every number you state must come from a tool result. Never add, average or estimate figures yourself. If you need a number you do not have, call a tool.
-2. Never invent a field, sector, client or stage that is not in the schema above. If a filter returns 0 rows, call sample_rows or list_boards_and_fields to find out what the data actually contains, then retry - do not report "0" without checking.
-3. Surface data-quality caveats. Tool results include a "caveats" array; fold the material ones into your answer as a short note. A number built on 60%-complete data must say so.
-4. Answer with insight, not just arithmetic. Say what the number means, what stands out, and what it implies. One concrete observation beats three restated figures.
-5. Currency units are whatever the board uses - report magnitudes as stored, do not convert or assume a currency symbol unless the board shows one.
+2. Filter using the vocabulary listed above, not your own. The boards use Skylark's wording. If a value you want is not listed, call distinct_values first rather than guessing. query_board does resolve near-misses (asking for sector "energy" finds the energy-type values), and it reports what it matched under "resolved_values" - repeat that to the user when it is not obvious.
+3. If a filter returns 0 rows, do not report "0" until you have checked with distinct_values or sample_rows that the value exists at all. A zero caused by a wrong filter is a wrong answer.
+4. Surface data-quality caveats. Tool results carry a "caveats" array; fold the material ones into your answer. A figure built on a half-filled column must say so - the deal value column in particular is sparsely populated.
+5. Answer with insight, not just arithmetic. Say what the number means, what stands out, and what it implies. One concrete observation beats three restated figures.
+6. Money on these boards is masked/scaled and unitless. Report magnitudes exactly as returned; do not add a currency symbol or convert to lakhs/crores unless the column title says so.
+
+## Business meaning on these boards
+- "Pipeline" means deals whose status is Open - not Won, not Dead. The lettered Deal Stage column (A. Lead Generated -> O.) is the position inside that funnel.
+- Deal outcome lives in Deal Status: Open / Won / Dead / On Hold. "Dead" is the lost bucket.
+- On the work order board, delivery progress is Execution Status, and money splits into order value, billed, collected, still-to-bill and receivable. Questions about cash, collections or AR belong to that board.
+- "Revenue" is ambiguous across these two boards: it can mean won deal value (sales) or billed/collected work-order value (finance). Pick the more likely one, say which you used, and offer the other in one clause.
 
 ## Handling ambiguity
 - Prefer answering with a stated assumption over stalling. Example: "Reading 'this quarter' as the calendar quarter Jul-Sep 2026."
-- Ask exactly one clarifying question ONLY when different readings give materially different answers and you cannot pick a sensible default - for instance "revenue" could mean won deal value or delivered work-order value. Offer the options, and if the user is vague, answer the most likely reading anyway.
-- "Pipeline" means deals in an open stage (Lead, Qualified, Proposal, Negotiation, On Hold) - not Won or Lost.
+- Ask exactly one clarifying question ONLY when different readings give materially different answers and no sensible default exists. Otherwise answer the most likely reading and note the assumption.
 
 ## Style
-Short. Lead with the answer. Markdown, but sparingly: bold the headline figures, use a compact table only when comparing 3+ groups. No preamble, no restating the question, no closing offers of further help. Caveats go in one short italic line at the end.`;
+Short. Lead with the answer. Markdown, sparingly: bold the headline figures, use a compact table only when comparing 3 or more groups. No preamble, no restating the question, no closing offers of further help. Caveats go in one short italic line at the end.`;
 }
 
 async function schemaSummary(): Promise<string> {
-  try {
-    const overview = await boardsOverview();
-    const lines: string[] = [];
-    for (const d of overview.datasets as Array<Record<string, any>>) {
-      if (d.error) {
-        lines.push(`- ${d.board_key}: UNAVAILABLE - ${d.error}`);
-        continue;
+  const lines: string[] = [];
+
+  for (const key of ["deals", "work_orders"] as BoardKey[]) {
+    try {
+      const d = await getDataset(key);
+      lines.push(`\n### ${key} — monday board "${d.board.name}", ${d.rowCount} rows`);
+      lines.push(`fields: ${d.mapping.map((m) => m.field).join(", ")}`);
+
+      // The single biggest accuracy win: let the model see the real vocabulary.
+      const vocab = Object.entries(d.distinct).filter(([, v]) => v.length <= 20);
+      for (const [field, values] of vocab) {
+        lines.push(`  ${field}: ${values.map((v) => `${v.value} (${v.count})`).join(", ")}`);
       }
-      lines.push(`- ${d.board_key} ("${d.monday_board}", ${d.rows} rows) fields: ${(d.mapped_fields as string[]).map((f) => f.split(" <- ")[0]).join(", ")}`);
-      if ((d.unmapped_columns as string[]).length) lines.push(`  unmapped columns kept as raw text: ${(d.unmapped_columns as string[]).join(", ")}`);
-      if ((d.warnings as string[]).length) lines.push(`  known issues: ${(d.warnings as string[]).slice(0, 4).join(" | ")}`);
+      const wide = Object.entries(d.distinct).filter(([, v]) => v.length > 20);
+      for (const [field, values] of wide) lines.push(`  ${field}: ${values.length} distinct values - use distinct_values to list them`);
+
+      if (d.unmappedColumns.length) lines.push(`  other columns readable by exact title: ${d.unmappedColumns.map((c) => c.title).join(", ")}`);
+      for (const w of d.quality.warnings.slice(0, 5)) lines.push(`  ! ${w}`);
+    } catch (err) {
+      lines.push(`\n### ${key} — UNAVAILABLE: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return lines.join("\n") || "No boards were readable.";
-  } catch (err) {
-    return `Board schema could not be read: ${err instanceof Error ? err.message : String(err)}`;
   }
+
+  return lines.join("\n") || "No boards were readable.";
 }
 
 function summarise(result: unknown): string {
   const r = result as Record<string, any>;
   if (r?.matched !== undefined) {
     const totals = r.totals ? Object.entries(r.totals).map(([k, v]) => `${k}=${v ?? "n/a"}`).join(", ") : "";
-    return `${r.matched} of ${r.scanned} rows${totals ? ` - ${totals}` : ""}${r.groups ? `, ${r.groups.length} groups` : ""}`;
+    return `${r.matched} of ${r.scanned} rows${totals ? ` — ${totals}` : ""}${r.groups ? `, ${r.groups.length} groups` : ""}`;
   }
   if (r?.completeness) return `${r.rows} rows, ${r.warnings?.length ?? 0} warnings`;
+  if (r?.values) return `${r.values.length} distinct values`;
   if (r?.period) return `brief for ${r.period}`;
   if (r?.datasets) return `${r.datasets.length} boards`;
-  if (r?.rows) return `${r.rows.length ?? 0} sample rows`;
+  if (Array.isArray(r?.rows)) return `${r.rows.length} sample rows`;
   return "ok";
 }
 
@@ -84,7 +99,7 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
     return;
   }
 
-  yield { type: "status", text: "Reading board schema from monday.com" };
+  yield { type: "status", text: "Reading boards from monday.com" };
   const system = systemPrompt(await schemaSummary());
 
   const turns: Turn[] = history.map((m) =>
@@ -134,6 +149,6 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
 
   yield {
     type: "answer",
-    text: "I hit the tool-call limit for this question. Try asking something narrower - for example one metric, one board, one timeframe.",
+    text: "I hit the tool-call limit for this question. Try asking something narrower - one metric, one board, one timeframe.",
   };
 }
