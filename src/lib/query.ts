@@ -416,14 +416,16 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
     });
 
     // Each group's share of the whole, computed here so the model never has to
-    // divide. "The top three are 53% of the total" is the single most common
-    // follow-up, and it must be a retrieved figure like any other.
-    const shareKey = defs.find((d) => d.fn === "sum")?.key ?? (defs.some((d) => d.fn === "count") ? "count" : undefined);
-    if (shareKey) {
-      const whole = groups.reduce((n, g) => n + (Number(g[shareKey]) || 0), 0);
-      if (whole > 0) {
-        for (const g of groups) g.share_pct = Math.round(((Number(g[shareKey]) || 0) / whole) * 1000) / 10;
-      }
+    // divide. Shares are named after the metric they measure: a bare
+    // "share_pct" next to both a count and a sum is ambiguous, and reading the
+    // value share as a count share is a wrong answer the grounding gate cannot
+    // catch, because the figure genuinely came from a tool.
+    const shareOf = defs.filter((d) => d.fn === "sum" || d.fn === "count");
+    for (const d of shareOf) {
+      const whole = groups.reduce((n, g) => n + (Number(g[d.key]) || 0), 0);
+      if (whole <= 0) continue;
+      const label = d.fn === "count" ? "share_of_count_pct" : `share_of_${d.key}_pct`;
+      for (const g of groups) g[label] = Math.round(((Number(g[d.key]) || 0) / whole) * 1000) / 10;
     }
 
     // Accept "sum:value desc" as well as "sum_value desc"; fall back to text
@@ -448,14 +450,29 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
     // A total carried by one group is not a typical figure, and reporting it
     // without saying so is misleading - Tender is 77% of open pipeline value
     // on four deals.
-    if (shareKey && groups.length > 1) {
-      const top = [...groups].sort((a, b) => Number(b.share_pct ?? 0) - Number(a.share_pct ?? 0))[0];
-      const share = Number(top?.share_pct ?? 0);
-      if (share >= 50) {
+    // Check EVERY share, not just the first metric: four deals can be a
+    // trivial share of rows and a dominant share of value, and it is the
+    // dominant one that makes a headline unrepresentative. Value shares are
+    // reported first because that is the concentration a founder cares about.
+    const shareKeys = shareOf
+      .map((d) => (d.fn === "count" ? "share_of_count_pct" : `share_of_${d.key}_pct`))
+      .sort((a, b) => (a === "share_of_count_pct" ? 1 : 0) - (b === "share_of_count_pct" ? 1 : 0));
+
+    if (groups.length > 1) {
+      for (const key of shareKeys) {
+        const top = [...groups].sort((a, b) => Number(b[key] ?? 0) - Number(a[key] ?? 0))[0];
+        const share = Number(top?.[key] ?? 0);
+        if (share < 50) continue;
         caveats.push(
-          `"${top[spec.group_by!]}" alone accounts for ${share}% of the total across ${top.count ?? "?"} row(s); the headline figure is concentrated in one group rather than typical of the whole.`,
+          `"${top[spec.group_by!]}" alone is ${share}% of the total by ${key.replace(/^share_of_|_pct$/g, "").replace(/_/g, " ")}, across ${top.count ?? "?"} row(s); the headline figure is concentrated in one group rather than typical of the whole.`,
         );
+        break; // one is enough; more is noise
       }
+    }
+
+    // Shares are of the WHOLE, so a truncated list will not add up to 100.
+    if (spec.limit && buckets.size > spec.limit && shareKeys.length) {
+      caveats.push(`Showing the top ${spec.limit} of ${buckets.size} groups; shares are of the full total, so the rows shown do not add to 100%.`);
     }
 
     const blanks = buckets.get("(blank)")?.rows.length ?? 0;

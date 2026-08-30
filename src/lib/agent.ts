@@ -7,8 +7,11 @@ import { getDataset, type BoardKey } from "./store";
 import { executeTool, TOOL_SPECS } from "./tools";
 
 const MAX_STEPS = 6;
-/** One repair attempt: enough to fix a stray percentage, not enough to loop. */
-const MAX_CORRECTIONS = 1;
+/**
+ * Two repair attempts. One covers a restatement; the second covers the case
+ * where the fix needs a fresh query, which is what a rate usually needs.
+ */
+const MAX_CORRECTIONS = 2;
 
 /**
  * What the UI shows when a reviewer opens up a step. The claim "no number is
@@ -44,7 +47,8 @@ ${schema}
 
 ## Hard rules
 1. Every number you state must come from a tool result. Never add, average or estimate figures yourself. If you need a number you do not have, call a tool.
-1b. This includes DERIVED figures. Percentages, shares, differences, ratios and growth rates are numbers too - call "compute" with the figures you already retrieved rather than working them out. Grouped results already carry share_pct, so use that instead of dividing.
+1a. A rate or share is retrievable, not calculated. Filter to the subset, group_by the field that splits it, and read the share off the group you want: a win rate is filter status in "Won,Dead", group_by status, metrics ["count"], then share_of_count_pct on the Won group. Shares are named after what they measure - share_of_count_pct is a share of ROWS, share_of_sum_value_pct is a share of VALUE. Four large deals can be 8% of deals and 77% of value, so pick the one the question asked for.
+1b. This includes DERIVED figures. Percentages, shares, differences, ratios and growth rates are numbers too - call "compute" with the figures you already retrieved rather than working them out. Grouped results already carry the shares, so use those instead of dividing.
 2. Filter using the vocabulary listed above, not your own. The boards use Skylark's wording. If a value you want is not listed, call distinct_values first rather than guessing. query_board does resolve near-misses (asking for sector "energy" finds the energy-type values), and it reports what it matched under "resolved_values" - repeat that to the user when it is not obvious.
 3. If a filter returns 0 rows, do not report "0" until you have checked with distinct_values or sample_rows that the value exists at all. A zero caused by a wrong filter is a wrong answer.
 4. Surface data-quality caveats. Tool results carry a "caveats" array; fold the material ones into your answer. A figure built on a half-filled column must say so - the deal value column in particular is sparsely populated.

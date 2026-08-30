@@ -51,17 +51,17 @@ The cash block was not in my original design — the work order board turned out
 The first run scored 85.7%, every miss a percentage divided in the model's head — asked about receivables it wrote "the top three account for over 53%", right that time and reproducible never. `compute` became a tool and grouped results gained `share_pct`, which reached 96.8%. But the prompt still only *asked*, so the same check now runs as a gate: before any answer ships, its figures are matched against everything the tools returned, and an answer that fails is sent back once with the offending numbers named.
 
 ```
-grounded   85/86 figures traced to a tool result (98.8%)
-derived    1        fabricated 0
+grounded   95/95 figures traced to a tool result (100%)
+derived    0        fabricated 0
 ```
 
-Zero fabricated is the number that matters, and the metric is the guarantee — `src/lib/grounding.ts` is the same module in both places, so the eval measures exactly what production enforces. Each answer carries the count it passed. The eval also caught a bug in itself, flagging "48% filled" as fabricated when that reaches the model through the schema summary, the same deterministic layer.
+Zero fabricated is the number that matters, and the metric is the guarantee — `src/lib/grounding.ts` is the same module in both places, so the eval measures exactly what production enforces. Each answer carries the count it passed. Verifying the arithmetic itself found a bug the gate could not: a bare `share_pct` beside both a count and a sum is ambiguous, and Tender is 8% of open deals but 77% of open value. Reading the wrong one is a wrong answer built from a genuinely retrieved figure. Shares are now named for what they measure, `share_of_count_pct` against `share_of_sum_value_pct`. The eval also caught a bug in itself, flagging "48% filled" as fabricated when that reaches the model through the schema summary, the same deterministic layer.
 
 ## 5. What I would do differently
 
 Ten questions is thin; forty would be better, and each costs several free-tier requests, so a bad minute rate-limits some into skips.
 
-One derived figure survives the gate's single repair attempt; a second pass or a hard refusal would close it, at the cost of latency on a free tier. Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; a join across both boards on the masked deal name, so one deal is followable from "A. Lead Generated" to collected; and a chart spec returned with the prose.
+Then a normalised snapshot in Postgres on a scheduled sync, surviving cold starts and making "versus last quarter" cheap; a join across both boards on the masked deal name, so one deal is followable from "A. Lead Generated" to collected; and a chart spec returned with the prose.
 
 ## 6. AI tools used
 

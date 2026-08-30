@@ -117,10 +117,21 @@ export function correctionPrompt(report: GroundingReport): string {
     lines.push(`No retrieved data supports: ${report.fabricated.map(fmt).join(", ")}. Remove these or retrieve them.`);
   }
   if (report.derived.length) {
-    lines.push(
-      `These look like arithmetic you performed yourself: ${report.derived.map(fmt).join(", ")}. ` +
-        `Call "compute" with the figures you already retrieved, then restate the answer using its result.`,
-    );
+    lines.push(`These look like arithmetic you performed yourself: ${report.derived.map(fmt).join(", ")}.`);
+
+    // Percentage-shaped misses are almost always a rate over a subset, and the
+    // engine already returns those - naming the exact call fixes it where a
+    // generic "call compute" does not.
+    if (report.derived.some((n) => Math.abs(n) <= 100)) {
+      lines.push(
+        "A rate or share over a subset is retrievable, not calculated: query_board with a filter for the subset, " +
+          "group_by the field that splits it, and read the share off the group you want. " +
+          'A win rate, for example, is filter status in "Won,Dead", group_by status, metrics ["count"] - then share_of_count_pct on the Won group IS the win rate. ' +
+          "Otherwise call compute with the two figures you already retrieved.",
+      );
+    } else {
+      lines.push("Call compute with the figures you already retrieved, then restate the answer using its result.");
+    }
   }
 
   lines.push("Rewrite the answer so every figure comes from a tool result. Do not apologise or mention this check.");

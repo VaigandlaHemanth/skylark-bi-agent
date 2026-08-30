@@ -318,8 +318,15 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   ];
   const lds: Dataset = { ...ds, rows: lopsided, rowCount: 3, distinct: {} };
   const g = runQuery(lds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc" });
-  check("dominant group carries share_pct", (g.groups?.[0] as Record<string, unknown>).share_pct, 90);
+  check("dominant group carries a value share", (g.groups?.[0] as Record<string, unknown>).share_of_sum_value_pct, 90);
   check("concentration is caveated", g.caveats.some((c) => c.includes("concentrated in one group")), true);
+  // Four big deals can be a small share of ROWS and a huge share of VALUE.
+  // Each share is named after the metric it measures so the two cannot be
+  // confused - a wrong reading here would pass the grounding gate.
+  const both = runQuery(lds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc" });
+  const tender = both.groups?.[0] as Record<string, unknown>;
+  check("value share and count share are separate", [tender.share_of_sum_value_pct, tender.share_of_count_pct], [90, 33.3]);
+  check("no ambiguous bare share remains", "share_pct" in tender, false);
 
   const evenRows = [
     row("e1", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 100, close_date: null }),
@@ -356,6 +363,9 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
 
   const fix = correctionPrompt(derived);
   check("the correction names the compute tool", fix.includes("compute"), true);
+  // A percentage-shaped miss gets the retrieval recipe, not a generic nudge.
+  check("a rate miss gets the share recipe", fix.includes("share_of_count_pct"), true);
+  check("a large-magnitude miss does not", correctionPrompt(checkGrounding("Pipeline is 12,484,710.", pool)).includes("share_of_count_pct"), false);
   check("the correction names the offending figure", fix.includes("28.5"), true);
 
   // Years and list markers must not trip the gate.

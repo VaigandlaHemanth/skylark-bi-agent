@@ -35,7 +35,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "query_board",
     description:
-      "Filter, group and aggregate one board - the ONLY way to produce a number. Filter values resolve against the board's real vocabulary (sector='energy' finds Renewables+Powerline) and the result reports what matched. Grouped results include share_pct per group, so never divide to get a percentage.",
+      "Filter, group and aggregate one board - the ONLY way to produce a number. Filter values resolve against the board's real vocabulary (sector='energy' finds Renewables+Powerline) and the result reports what matched. Grouped results include a share per group named after the metric it measures (share_of_count_pct, share_of_sum_value_pct), so never divide to get a percentage - and read the one matching what was asked.",
     parameters: {
       type: "object",
       properties: {
