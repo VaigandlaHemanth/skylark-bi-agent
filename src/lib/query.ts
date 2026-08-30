@@ -189,6 +189,13 @@ function prepare(ds: Dataset, filters: Filter[], resolved: Array<Record<string, 
 
 /* ---------------------------------------------------------------- matching */
 
+const NEGATED_OPS = new Set(["ne", "neq", "not_in", "not_contains"]);
+
+/** True when the filter asks for rows that are NOT something. */
+function isNegated(f: Filter, p: Prepared): boolean {
+  return p.negate === true || NEGATED_OPS.has((f.op || "eq").toLowerCase());
+}
+
 function matches(row: Row, p: Prepared): boolean {
   const { f } = p;
   const raw = readField(row, f.field);
@@ -197,7 +204,14 @@ function matches(row: Row, p: Prepared): boolean {
 
   if (op === "is_empty" || op === "is_null") return raw == null || raw === "";
   if (op === "not_empty" || op === "not_null") return raw != null && raw !== "";
-  if (raw == null || raw === "") return false;
+
+  // A blank cell satisfies a NEGATED filter: a work order with no invoice
+  // status is genuinely "not Fully Billed". Excluding it made complementary
+  // filters fail to partition the board - on the real export, "invoice_status
+  // not_in Fully Billed" returned 21 rows and 11.7M of receivables instead of
+  // 85 rows and 13.3M, understating the money by 12% with no caveat at all.
+  // The rows are counted in a caveat rather than silently folded in.
+  if (raw == null || raw === "") return isNegated(f, p);
 
   if (p.valueSet) {
     const hit = p.valueSet.has(normKey(String(raw)));
@@ -267,6 +281,11 @@ function parseMetrics(metrics: string[] | undefined): MetricDef[] {
 function aggregate(rows: Row[], defs: MetricDef[]) {
   const out: Record<string, number | null> = {};
   const nullCounts: Record<string, number> = {};
+  // A cell the aggregator cannot use is not the same as a cell nobody filled
+  // in. Conflating them made the engine report "344 of 344 rows have no close
+  // date" for a column that is 79% populated - the caveat is material, so that
+  // falsehood was then appended to the answer.
+  const nonNumeric: Record<string, number> = {};
 
   for (const d of defs) {
     if (d.fn === "count") {
@@ -283,13 +302,20 @@ function aggregate(rows: Row[], defs: MetricDef[]) {
     }
 
     const vals: number[] = [];
-    let nulls = 0;
+    let blanks = 0;
+    let unusable = 0;
     for (const r of rows) {
-      const n = asNumber(readField(r, d.field));
-      if (n == null) nulls++;
+      const raw = readField(r, d.field);
+      if (raw == null || String(raw).trim() === "") {
+        blanks++;
+        continue;
+      }
+      const n = asNumber(raw);
+      if (n == null) unusable++;
       else vals.push(n);
     }
-    nullCounts[d.field] = nulls;
+    nullCounts[d.field] = blanks;
+    nonNumeric[d.field] = unusable;
 
     if (!vals.length) {
       out[d.key] = null;
@@ -305,7 +331,7 @@ function aggregate(rows: Row[], defs: MetricDef[]) {
       : Math.round(sum * 100) / 100;
   }
 
-  return { out, nullCounts };
+  return { out, nullCounts, nonNumeric };
 }
 
 function median(v: number[]): number {
@@ -383,10 +409,32 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
   const prepared = prepare(ds, filters, resolved, caveats);
   const matchedRows = ds.rows.filter((r) => prepared.every((p) => matches(r, p)));
   const defs = parseMetrics(spec.metrics);
-  const { out: totals, nullCounts } = aggregate(matchedRows, defs);
+  const { out: totals, nullCounts, nonNumeric } = aggregate(matchedRows, defs);
 
   for (const [field, n] of Object.entries(nullCounts)) {
     if (n > 0) caveats.push(`${n} of ${matchedRows.length} matched rows have no "${field}" value; they are excluded from sums and averages on that field.`);
+  }
+
+  for (const f of filters) {
+    const p = prepared.find((x) => x.f === f);
+    if (!p || !isNegated(f, p)) continue;
+    const blanks = matchedRows.filter((r) => {
+      const v = readField(r, f.field);
+      return v == null || v === "";
+    }).length;
+    if (blanks > 0) {
+      caveats.push(
+        `${blanks} of the ${matchedRows.length} matched rows have no "${f.field}" value at all. A blank counts as "not ${f.value ?? ""}" here, so they are included; ask for "${f.field} is_empty" to see them on their own.`,
+      );
+    }
+  }
+
+  for (const [field, n] of Object.entries(nonNumeric)) {
+    if (n > 0) {
+      caveats.push(
+        `${n} of ${matchedRows.length} matched rows hold a "${field}" value that is not a number, so no arithmetic was done on it. The cells are filled - ask for rows sorted by "${field}", or use data_quality, rather than a sum or minimum.`,
+      );
+    }
   }
 
   // Quantities keep their unit in a sibling field, so a sum silently adds
@@ -456,7 +504,18 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
 
     // Accept "sum:value desc" as well as "sum_value desc"; fall back to text
     // comparison when the key is not numeric, so sorting never no-ops.
-    const sortKey = ((spec.sort || "").replace(/\s*(desc|asc)$/i, "").trim() || defs.find((d) => d.fn !== "count")?.key || "count").replace(":", "_");
+    let sortKey = ((spec.sort || "").replace(/\s*(desc|asc)$/i, "").trim() || defs.find((d) => d.fn !== "count")?.key || "count").replace(":", "_");
+
+    // "sort: value desc" names the FIELD, not the metric key, which is
+    // "sum_value". Falling through to the group label sorted six sectors
+    // reverse-alphabetically and then let `limit` keep Railways (367,020)
+    // while dropping Mining (795,210) from a "top 3 by value" list. The row
+    // branch below already normalises this spelling; the two disagreed.
+    if (groups.length && !(sortKey in groups[0])) {
+      const match = defs.find((d) => d.field === sortKey && d.key in groups[0]);
+      if (match) sortKey = match.key;
+    }
+
     const ascending = /asc$/i.test(spec.sort || "");
     const dir = ascending ? -1 : 1;
     groups.sort((a, b) => {

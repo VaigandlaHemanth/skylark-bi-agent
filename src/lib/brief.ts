@@ -196,9 +196,10 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
   /* --------------------------------------------------- cross-board signal */
   try {
     const [deals, wo] = await Promise.all([getDataset("deals"), getDataset("work_orders")]);
-    const tally = (ds: Dataset, valueField: string) => {
+    const tally = (ds: Dataset, valueField: string, keep?: (r: Dataset["rows"][number]) => boolean) => {
       const m = new Map<string, { value: number; count: number }>();
       for (const r of ds.rows) {
+        if (keep && !keep(r)) continue;
         const s = r.f.sector as string | null;
         if (!s) continue;
         const cur = m.get(s) ?? { value: 0, count: 0 };
@@ -209,17 +210,30 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
       return m;
     };
 
-    const d = tally(deals, "value");
+    // Pipeline means OPEN deals. Tallying every row counted Dead and Won ones
+    // too, so this block disagreed with compare_boards on the same sector: one
+    // dead deal put Powerline at 812,917,217 here against 13.3M there, and a
+    // reader opening the leadership card saw the app contradict itself.
+    // compare_boards filters blanks out as well, so this matches that.
+    const openSet = new Set(
+      (valuesMeaning(deals, "status", "open") ?? "Open").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean),
+    );
+    const isOpen = (r: Dataset["rows"][number]) => {
+      const st = r.f.status;
+      return st != null && openSet.has(String(st).trim().toLowerCase());
+    };
+
+    const d = tally(deals, "value", isOpen);
     const w = tally(wo, "value");
     brief.sector_pipeline_vs_delivery = [...new Set([...d.keys(), ...w.keys()])]
       .map((s) => ({
         sector: s,
-        deals: d.get(s)?.count ?? 0,
-        deal_value: Math.round(d.get(s)?.value ?? 0),
+        open_deals: d.get(s)?.count ?? 0,
+        open_deal_value: Math.round(d.get(s)?.value ?? 0),
         work_orders: w.get(s)?.count ?? 0,
         work_order_value: Math.round(w.get(s)?.value ?? 0),
       }))
-      .sort((a, b) => b.deal_value + b.work_order_value - (a.deal_value + a.work_order_value))
+      .sort((a, b) => b.open_deal_value + b.work_order_value - (a.open_deal_value + a.work_order_value))
       .slice(0, 12);
   } catch {
     /* the failing board already reported its own error above */

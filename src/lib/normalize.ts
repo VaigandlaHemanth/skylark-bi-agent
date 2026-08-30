@@ -61,7 +61,12 @@ export function parseNumber(raw: string | null | undefined): { value: number | n
   // Take the FIRST number token only. Stripping every non-digit globally would
   // concatenate ranges: "1,00,000 - 2,00,000" must not become 100000200000.
   const cleaned = s.replace(/[()]/g, "");
-  const token = cleaned.match(/\d[\d,]*(?:\.\d+)?|\.\d+/);
+  // The bare-decimal alternative must not fire on an abbreviation's full stop.
+  // Scanning left to right, "Rs.45,000" hit the dot first and matched ".45",
+  // reporting forty-five thousand rupees as 0.45 - and "Rs.45000" did it
+  // silently, because the greedy digit run left nothing behind to flag as a
+  // second number.
+  const token = cleaned.match(/\d[\d,]*(?:\.\d+)?|(?<![A-Za-z])\.\d+/);
   if (!token) return { value: null, note: `could not read a number from "${s}"` };
 
   const n = Number(token[0].replace(/,/g, ""));

@@ -21,7 +21,7 @@ import {
   SECTOR_CONCEPTS,
   WORK_STATUS_CONCEPTS,
 } from "../src/lib/normalize";
-import { appendMissingCaveats, checkGrounding, correctionPrompt, materialCaveats, numbersIn, numbersInProse } from "../src/lib/grounding";
+import { appendMissingCaveats, checkGrounding, correctionPrompt, isGrounded, materialCaveats, numbersIn, numbersInProse } from "../src/lib/grounding";
 import { deriveFollowUps } from "../src/lib/followups";
 import { resolveTimeframe, runQuery } from "../src/lib/query";
 import type { Dataset, Row } from "../src/lib/store";
@@ -47,6 +47,19 @@ check("Mon dd, yyyy", parseDate("Jul 15, 2026").value, "2026-07-15");
 check("full month name", parseDate("15 September 2026").value, "2026-09-15");
 check("two-digit year", parseDate("15/07/26", "dmy").value, "2026-07-15");
 check("quarter", parseDate("Q3 2026").value, "2026-07-01");
+
+// A currency abbreviation ends in a full stop, and the bare-decimal branch
+// used to match that dot: "Rs.45,000" parsed as 0.45, a thousandfold
+// understatement, and the no-comma form did it without even a note.
+check("Rs. prefix with comma", parseNumber("Rs.45,000").value, 45000);
+check("Rs. prefix, Indian grouping", parseNumber("Rs.5,00,000").value, 500000);
+check("Rs. prefix, no comma", parseNumber("Rs.45000").value, 45000);
+check("INR. prefix", parseNumber("INR.2,50,000").value, 250000);
+check("Approx. prefix", parseNumber("Approx.75,000").value, 75000);
+check("Rs. prefix with a multiplier", parseNumber("Rs.1.2 Cr").value, 12000000);
+check("a genuine leading decimal still parses", parseNumber(".5").value, 0.5);
+check("and a normal decimal is untouched", parseNumber("0.45").value, 0.45);
+check("a space after the symbol was always fine", parseNumber("Rs 45,000").value, 45000);
 check("month only", parseDate("Jul 2026").value, "2026-07-01");
 check("excel serial", parseDate("46218").value, "2026-07-15");
 check("blank", parseDate("").value, null);
@@ -677,6 +690,75 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
     steps: [{ name: "query_board", trace: { board: "deals" } }],
   });
   check("a clarifying question offers its own options", clarify, ["Won deal value", "Billed work"]);
+}
+
+/* ------------------------------------------------ group sort by field name */
+
+{
+  // "sort: value desc" names the field; the metric key is "sum_value". Falling
+  // back to the group label sorted alphabetically, so limit kept the wrong
+  // groups and called them the top N.
+  const byField = runQuery(ds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "value desc" });
+  const byKey = runQuery(ds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc" });
+  check("a bare field name sorts like its metric key",
+    (byField.groups ?? []).map((g) => g.sector),
+    (byKey.groups ?? []).map((g) => g.sector));
+
+  // Descending really is descending.
+  const vals = (byField.groups ?? []).map((g) => Number(g.sum_value ?? 0));
+  check("groups come back in value order", vals.slice().sort((a, b) => b - a), vals);
+
+  // And the top-N is the real top-N.
+  const top2 = runQuery(ds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "value desc", limit: 2 });
+  check("limit keeps the largest, not the alphabetical",
+    (top2.groups ?? []).map((g) => g.sector),
+    (byKey.groups ?? []).slice(0, 2).map((g) => g.sector));
+
+  // Sorting by the group label itself still works.
+  const byLabel = runQuery(ds, { group_by: "sector", metrics: ["count"], sort: "sector asc" });
+  check("sorting by the label is unaffected", (byLabel.groups ?? []).length > 0, true);
+}
+
+/* ------------------------------------------- grounding: no magnitude drift */
+
+{
+  // A bare percentage must not be matched against an unrelated large total.
+  // The old rescale loop multiplied bare numbers by 1e3..1e9, so an invented
+  // "32%" collided with a sum_value of 31,894,034 and shipped as verified.
+  const pool = numbersIn({ board: "Deals", scanned: 245, matched: 62, totals: { count: 62, sum_value: 31894034 } });
+  check("an invented percentage is not grounded by a large total", isGrounded(32, pool), false);
+  check("and checkGrounding reports it", checkGrounding("Our win rate is 32%.", pool).clean, false);
+
+  // A magnitude the model states in words is still grounded, because
+  // numbersInProse expands the suffix before the check.
+  check("a stated magnitude still grounds", isGrounded(numbersInProse("about 31.9M")[0], pool), true);
+  check("as does the Indian form", isGrounded(numbersInProse("about 3.19 crore")[0], pool), true);
+  check("an exact figure still grounds", isGrounded(31894034, pool), true);
+  check("and so does a rounded one", isGrounded(31894000, pool), true);
+}
+
+/* ------------------------------- blank cells vs cells holding non-numbers */
+
+{
+  // asNumber rejects an ISO date, correctly. Counting that as "no value" made
+  // the engine report a populated column as entirely empty - and because the
+  // caveat is material, the falsehood was appended to the answer.
+  const dated: Row[] = [
+    row("d1", { sector: "Mining", close_date: "2026-07-15" }),
+    row("d2", { sector: "Mining", close_date: "2026-08-01" }),
+    row("d3", { sector: "Renewables", close_date: null }),
+  ];
+  const dds: Dataset = { ...ds, rows: dated, rowCount: 3, distinct: {} };
+  const r = runQuery(dds, { metrics: ["min:close_date"] });
+  const blankCaveat = (r.caveats ?? []).find((c) => c.includes("have no"));
+  check("only the genuinely blank row is counted blank", blankCaveat?.startsWith("1 of 3"), true);
+  const filledCaveat = (r.caveats ?? []).find((c) => c.includes("not a number"));
+  check("filled-but-unusable cells get their own caveat", filledCaveat?.startsWith("2 of 3"), true);
+  check("and it does not claim they are empty", filledCaveat?.includes("The cells are filled"), true);
+
+  // A genuinely numeric column reports only real blanks and nothing else.
+  const money = runQuery(ds, { metrics: ["sum:value"] });
+  check("a numeric column raises no non-numeric caveat", (money.caveats ?? []).some((c) => c.includes("not a number")), false);
 }
 
 /* --------------------------------------------------------- quantity units */

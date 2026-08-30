@@ -48,8 +48,15 @@ export function isNoise(n: number): boolean {
 }
 
 /**
- * Grounded if some retrieved figure matches exactly, within rounding, or as a
- * stated magnitude ("31.9M" for 31,894,034).
+ * Grounded if some retrieved figure matches exactly or within rounding.
+ *
+ * A stated magnitude ("31.9M" for 31,894,034) is already handled upstream:
+ * numbersInProse expands the suffix before this is called. There used to be a
+ * rescale loop here that multiplied BARE numbers by 1e3..1e9 as well, which
+ * meant any small figure could collide with an unrelated large total - a
+ * fabricated "32%" matched a sum_value of 31,894,034 and shipped under a
+ * "1 figure verified" badge. Redundant for its stated purpose and a hole in
+ * the guarantee, so it is gone.
  */
 export function isGrounded(n: number, pool: Set<number>): boolean {
   if (pool.has(n)) return true;
@@ -57,9 +64,6 @@ export function isGrounded(n: number, pool: Set<number>): boolean {
     if (t === 0 && n === 0) return true;
     const denom = Math.max(Math.abs(t), 1);
     if (Math.abs(n - t) / denom < 0.011) return true;
-    for (const scale of [1e3, 1e5, 1e6, 1e7, 1e9]) {
-      if (Math.abs(n * scale - t) / denom < 0.011) return true;
-    }
   }
   return false;
 }
