@@ -11,9 +11,9 @@ const BOARD_ARG: JSONSchema = {
   description: 'Which board to read. "deals" is the sales funnel, "work_orders" is project execution and billing.',
 };
 
-const DEAL_FIELDS = "client, sector, status (Open/Won/Dead/On Hold), stage (the lettered funnel ladder), value, close_date, actual_close_date, created_date, probability (High/Medium/Low), product, owner, deal_name";
+const DEAL_FIELDS = "client, sector, status (Open/Won/Dead/On Hold), stage (the lettered funnel ladder), value, close_date, actual_close_date, created_date, probability (High/Medium/Low), product, owner, deal_name (the item name)";
 const WO_FIELDS =
-  "client, sector, status (execution status), service, work_nature, value, billed, collected, unbilled, receivable, invoice_status, billing_status, wo_status, start_date, end_date, delivery_date, po_date, owner, wo_id, quantity_po, quantity_billed, quantity_balance";
+  "client, sector, status (execution status), service, work_nature, value, billed, collected, unbilled, receivable, invoice_status, billing_status, wo_status, start_date, end_date, delivery_date, po_date, owner, wo_id, quantity_po, quantity_billed, quantity_balance, deal_name (the item name)";
 
 export const TOOL_SPECS: ToolSpec[] = [
   {

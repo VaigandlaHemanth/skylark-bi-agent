@@ -110,7 +110,11 @@ export function resolveTimeframe(phrase: string | undefined, now = today()): { f
 function readField(row: Row, field: string): string | number | null {
   const f = field.trim();
   if (!f) return null;
-  if (f === "name" || f === "item" || f === "item name") return row.name || null;
+  // On both boards the deal name is the monday ITEM name, not a column, so
+  // these aliases are the only way a filter on it can bind.
+  if (f === "name" || f === "item" || f === "item name" || f === "deal_name" || f === "deal name" || f === "wo_name") {
+    return row.name || null;
+  }
   if (f in row.f) return row.f[f];
 
   const lower = f.toLowerCase();
@@ -441,6 +445,19 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
     if (spec.limit) groups = groups.slice(0, spec.limit);
     result.groups = groups;
 
+    // A total carried by one group is not a typical figure, and reporting it
+    // without saying so is misleading - Tender is 77% of open pipeline value
+    // on four deals.
+    if (shareKey && groups.length > 1) {
+      const top = [...groups].sort((a, b) => Number(b.share_pct ?? 0) - Number(a.share_pct ?? 0))[0];
+      const share = Number(top?.share_pct ?? 0);
+      if (share >= 50) {
+        caveats.push(
+          `"${top[spec.group_by!]}" alone accounts for ${share}% of the total across ${top.count ?? "?"} row(s); the headline figure is concentrated in one group rather than typical of the whole.`,
+        );
+      }
+    }
+
     const blanks = buckets.get("(blank)")?.rows.length ?? 0;
     if (blanks) caveats.push(`${blanks} matched rows have no "${spec.group_by}" value and are shown as "(blank)".`);
   }
@@ -448,7 +465,29 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
   if (spec.return_rows || (!spec.group_by && matchedRows.length <= 25)) {
     const cols = ds.mapping.map((m) => m.field);
     const cap = spec.limit ?? 25;
-    result.rows = matchedRows.slice(0, cap).map((r) => {
+
+    // Sort the rows too, not only groups. "The eight largest open deals" asked
+    // for sort:"value desc" and used to get the first eight in board order.
+    let ordered = matchedRows;
+    if (spec.sort) {
+      const raw = spec.sort.replace(/\s*(desc|asc)$/i, "").trim();
+      // Accept the metric spelling ("sum_value" / "sum:value") as the field.
+      const field = toCanonicalField(ds, raw.replace(/^(sum|avg|min|max|median|count|distinct)[_:]/, "")) ?? raw;
+      const dir = /asc$/i.test(spec.sort) ? -1 : 1;
+      ordered = [...matchedRows].sort((a, b) => {
+        const av = readField(a, field);
+        const bv = readField(b, field);
+        const an = asNumber(av);
+        const bn = asNumber(bv);
+        // Rows missing the sort field sink to the bottom either way.
+        if (an == null && bn == null) return 0;
+        if (an == null) return 1;
+        if (bn == null) return -1;
+        return dir * (bn - an);
+      });
+    }
+
+    result.rows = ordered.slice(0, cap).map((r) => {
       const o: Record<string, unknown> = { item: r.name };
       for (const c of cols) if (r.f[c] != null) o[c] = r.f[c];
       if (r.issues.length) o._issues = r.issues.slice(0, 3);

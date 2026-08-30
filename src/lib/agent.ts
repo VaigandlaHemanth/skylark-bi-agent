@@ -53,6 +53,7 @@ ${schema}
 - "Pipeline" means deals whose status is Open - not Won, not Dead. The lettered Deal Stage column (A. Lead Generated -> O.) is the position inside that funnel.
 - Deal outcome lives in Deal Status: Open / Won / Dead / On Hold. "Dead" is the lost bucket.
 - On the work order board, delivery progress is Execution Status, and money splits into order value, billed, collected, still-to-bill and receivable. Questions about cash, collections or AR belong to that board.
+- The sector list mixes industries with procurement routes: "Tender" and "DSP" describe HOW a deal is bought, not WHAT industry it is in. Tender in particular carries very few, very large deals, so it can dominate a value total while representing almost no deal count. Say so when it tops a ranking.
 - "Revenue" is ambiguous across these two boards: it can mean won deal value (sales) or billed/collected work-order value (finance). Pick the more likely one, say which you used, and offer the other in one clause.
 
 ## Handling ambiguity

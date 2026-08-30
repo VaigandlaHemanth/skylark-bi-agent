@@ -283,6 +283,53 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   check("column-title filter hits parsed numbers", t.matched, 3);
 }
 
+/* ------------------------------------------- review-round regression checks */
+
+// sort must order ROW lists, not only groups: "the largest open deals" was
+// returning the first N in board order.
+{
+  const byValue = runQuery(ds, { filters: [{ field: "value", op: "not_empty" }], return_rows: true, limit: 4, sort: "value desc" });
+  check("row lists honour sort desc", byValue.rows?.map((r) => r.value), [999, 300, 200, 100]);
+  const asc = runQuery(ds, { filters: [{ field: "value", op: "not_empty" }], return_rows: true, limit: 4, sort: "value asc" });
+  check("row lists honour sort asc", asc.rows?.map((r) => r.value), [50, 100, 200, 300]);
+  // The metric spelling a caller would naturally reach for must work too.
+  const metricSpelling = runQuery(ds, { filters: [{ field: "value", op: "not_empty" }], return_rows: true, limit: 2, sort: "sum_value desc" });
+  check("row sort accepts the metric spelling", metricSpelling.rows?.map((r) => r.value), [999, 300]);
+  // Rows with no value sink rather than sorting as zero at the top.
+  const withNulls = runQuery(ds, { return_rows: true, limit: 6, sort: "value desc" });
+  check("rows missing the sort field sink", (withNulls.rows?.at(-1) as Record<string, unknown> | undefined)?.value, undefined);
+}
+
+// deal_name is the monday ITEM name, not a column - a filter on it must bind.
+{
+  const named = runQuery(ds, { filters: [{ field: "deal_name", op: "contains", value: "Deal 1" }], metrics: ["count"] });
+  check("deal_name resolves to the item name", named.matched, 1);
+  const empty = runQuery(ds, { filters: [{ field: "deal_name", op: "not_empty" }], metrics: ["count"] });
+  check("deal_name is populated for every row", empty.matched, 6);
+}
+
+// A total carried by one group is flagged rather than reported as typical.
+{
+  const lopsided = [
+    row("c1", { sector: "Tender", status: "Open", stage: "A. Lead Generated", value: 900, close_date: null }),
+    row("c2", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 60, close_date: null }),
+    row("c3", { sector: "Railways", status: "Open", stage: "A. Lead Generated", value: 40, close_date: null }),
+  ];
+  const lds: Dataset = { ...ds, rows: lopsided, rowCount: 3, distinct: {} };
+  const g = runQuery(lds, { group_by: "sector", metrics: ["count", "sum:value"], sort: "sum_value desc" });
+  check("dominant group carries share_pct", (g.groups?.[0] as Record<string, unknown>).share_pct, 90);
+  check("concentration is caveated", g.caveats.some((c) => c.includes("concentrated in one group")), true);
+
+  const evenRows = [
+    row("e1", { sector: "Mining", status: "Open", stage: "A. Lead Generated", value: 100, close_date: null }),
+    row("e2", { sector: "Railways", status: "Open", stage: "A. Lead Generated", value: 95, close_date: null }),
+    row("e3", { sector: "Renewables", status: "Open", stage: "A. Lead Generated", value: 90, close_date: null }),
+  ];
+  const eds: Dataset = { ...ds, rows: evenRows, rowCount: 3, distinct: {} };
+  const even = runQuery(eds, { group_by: "sector", metrics: ["count", "sum:value"] });
+  check("balanced groups are not caveated", even.caveats.some((c) => c.includes("concentrated in one group")), false);
+}
+
 /* -------------------------------------------------------------------- out */
 
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);

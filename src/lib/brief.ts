@@ -81,8 +81,26 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
       lost_count: lostQ.matched,
       lost_value: lostQ.totals.sum_value,
       win_rate_pct: decided ? Math.round((wonQ.matched / decided) * 100) : null,
-      note: decided ? undefined : "No deals were marked won or lost inside this window, so a win rate cannot be computed for it.",
     };
+
+    // Close dates cluster, so short windows often contain nothing decided.
+    // "Cannot be computed" is a shrug; the lifetime rate is the real answer,
+    // clearly labelled as covering a different period.
+    if (!decided) {
+      const wonAll = runQuery(deals, { filters: [...sectorFilter, { field: "status", op: "in", value: won }], metrics: ["count", "sum:value"] });
+      const lostAll = runQuery(deals, { filters: [...sectorFilter, { field: "status", op: "in", value: lost }], metrics: ["count", "sum:value"] });
+      const decidedAll = wonAll.matched + lostAll.matched;
+      (brief.conversion as Record<string, unknown>).note =
+        `No deals closed inside ${period}, so no win rate exists for that window. Lifetime figures are given instead and must be labelled as such.`;
+      (brief.conversion as Record<string, unknown>).lifetime = {
+        basis: "all deals on the board, regardless of close date",
+        won_count: wonAll.matched,
+        won_value: wonAll.totals.sum_value,
+        lost_count: lostAll.matched,
+        lost_value: lostAll.totals.sum_value,
+        win_rate_pct: decidedAll ? Math.round((wonAll.matched / decidedAll) * 100) : null,
+      };
+    }
 
     if (slipping) {
       brief.slipping_deals = {
@@ -94,6 +112,10 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
     }
 
     collect(pipeline.caveats);
+    // The sector breakdown is where concentration shows up (Tender is 77% of
+    // open value on four deals) - that caveat has to reach the footnote.
+    collect(bySector.caveats);
+    if (byStage) collect(byStage.caveats);
     collect(wonQ.caveats);
     if (slipping) collect(slipping.caveats);
     collect(deals.quality.warnings);
@@ -163,6 +185,7 @@ export async function leadershipBrief(timeframe = "this quarter", sector?: strin
     }
 
     if (active) collect(active.caveats);
+    collect(bySector.caveats);
     collect(delivered.caveats);
     if (overdue) collect(overdue.caveats);
     collect(wo.quality.warnings);
