@@ -209,7 +209,8 @@ function traceDetail(args: Record<string, unknown>, result: unknown): TraceDetai
   // nothing from, on the tool whose reasoning most needs showing.
   if (typeof r.dimension === "string" && Array.isArray(r.rows)) {
     detail.query = `deals vs work_orders  ·  joined on ${r.dimension}  ·  ${r.rows.length} groups`;
-    detail.matched = r.rows.length;
+    // No matched/scanned here: this compares groups, not rows, and the panel
+    // rendered "10 matched of 0 scanned" when they were borrowed anyway.
     if (typeof r.covers === "string") detail.caveats = [r.covers, ...(detail.caveats ?? [])].slice(0, 4);
     if (Array.isArray(r.data_caveats) && r.data_caveats.length) {
       detail.caveats = [...(detail.caveats ?? []), ...r.data_caveats.filter((c: unknown) => typeof c === "string")].slice(0, 4);
