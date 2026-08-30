@@ -25,6 +25,13 @@ export type TraceDetail = {
   totals?: Record<string, number | null>;
   resolved?: Array<{ field: string; asked: string; used: string[] }>;
   caveats?: string[];
+  // Structured echo of what was actually asked, so the client can propose
+  // follow-ups from evidence rather than from a guess at the question's topic.
+  board?: string;
+  groupBy?: string;
+  filters?: Array<{ field: string; value: string }>;
+  timeframe?: string;
+  top?: { label: string; metric: string; value: number };
 };
 
 export type AgentEvent =
@@ -181,6 +188,27 @@ function traceDetail(args: Record<string, unknown>, result: unknown): TraceDetai
     }));
   }
   if (Array.isArray(r.caveats) && r.caveats.length) detail.caveats = r.caveats.slice(0, 4);
+
+  if (typeof args.board === "string") detail.board = args.board;
+  if (typeof args.group_by === "string") detail.groupBy = args.group_by;
+  if (typeof args.timeframe === "string") detail.timeframe = args.timeframe;
+  if (Array.isArray(args.filters)) {
+    const fs = (args.filters as Array<Record<string, unknown>>)
+      .filter((f) => f?.field && f.value != null && f.value !== "")
+      .map((f) => ({ field: String(f.field), value: String(f.value) }));
+    if (fs.length) detail.filters = fs;
+  }
+
+  // Groups arrive sorted, so the head is the group the answer leans on — the
+  // one a founder asks about next.
+  if (Array.isArray(r.groups) && r.groups.length && detail.groupBy) {
+    const head = r.groups[0] as Record<string, unknown>;
+    const label = head[detail.groupBy];
+    const metric = Object.keys(head).find((k) => k !== detail.groupBy && typeof head[k] === "number");
+    if (typeof label === "string" && label !== "(blank)" && metric) {
+      detail.top = { label, metric, value: head[metric] as number };
+    }
+  }
 
   // compute() returns the expression it evaluated; show the arithmetic itself.
   if (typeof r.expression === "string") {

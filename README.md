@@ -67,6 +67,7 @@ Browser  ──POST /api/chat──▶  Agent loop (max 6 tool steps)
 | `query.ts` | Filter / group / aggregate, term resolution, timeframes, caveats |
 | `compare.ts` | Cross-board comparison on sector or owner |
 | `grounding.ts` | The gate: every figure must trace to a tool result |
+| `followups.ts` | Next questions derived from the trace, not from a static list |
 | `agent.ts` | System prompt + tool loop |
 | `page.tsx` | Chat UI — Apple-HIG-influenced, reduced-motion/transparency aware |
 
@@ -119,10 +120,10 @@ MONDAY_WORK_ORDERS_BOARD_ID=
 **5. Verify without keys**
 
 ```bash
-npm test        # 202 checks, no network
+npm test        # 222 checks, no network
 ```
 
-- `npm run selftest` — 150 checks: every date format, currency form, timeframe, the filter/aggregate engine, the grounding gate
+- `npm run selftest` — 170 checks: every date format, currency form, timeframe, the filter/aggregate engine, the grounding gate
 - `npm run e2etest` — 52 checks: full chain with `fetch` stubbed to a board whose headers deliberately *don't* match the field names
 - `npm run eval` — needs keys: 15 founder questions against the live agent
 

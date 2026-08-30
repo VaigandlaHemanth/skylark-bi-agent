@@ -22,6 +22,7 @@ import {
   WORK_STATUS_CONCEPTS,
 } from "../src/lib/normalize";
 import { appendMissingCaveats, checkGrounding, correctionPrompt, materialCaveats, numbersIn, numbersInProse } from "../src/lib/grounding";
+import { deriveFollowUps } from "../src/lib/followups";
 import { resolveTimeframe, runQuery } from "../src/lib/query";
 import type { Dataset, Row } from "../src/lib/store";
 
@@ -459,6 +460,181 @@ check("Q3 2026 still works", resolveTimeframe("Q3 2026", aug)?.from, "2026-07-01
   const worded = appendMissingCaveats("Total is X, but many values are missing.", sparse);
   check("paraphrase counts as saying it", worded.includes("excluded from sums"), false);
   check("nothing is added when nothing is material", appendMissingCaveats("All good.", noise), "All good.");
+}
+
+/* ------------------------------------------------------------- follow-ups */
+
+{
+  const FB = ["Static one", "Static two", "Static three"];
+  const base = { asked: [] as string[], fallback: FB };
+
+  // Reading only the sales board, the useful next question is the delivery one,
+  // scoped to whatever the answer was actually about.
+  const oneBoard = deriveFollowUps({
+    ...base,
+    answer: "Renewables leads the pipeline.",
+    steps: [{ name: "query_board", trace: { board: "deals", filters: [{ field: "sector", value: "Renewables" }] } }],
+  });
+  check("a deals-only answer pivots to delivery", oneBoard[0], "How is delivery tracking for Renewables?");
+
+  const woBoard = deriveFollowUps({
+    ...base,
+    answer: "Railways carries the most work.",
+    steps: [{ name: "query_board", trace: { board: "work_orders", filters: [{ field: "sector", value: "Railways" }] } }],
+  });
+  check("a work-order answer pivots to pipeline", woBoard[0], "What does the pipeline look like for Railways?");
+
+  // Touching both boards leaves nothing to pivot to.
+  const both = deriveFollowUps({
+    ...base,
+    answer: "Compared.",
+    steps: [{ name: "query_board", trace: { board: "deals" } }, { name: "query_board", trace: { board: "work_orders" } }],
+  });
+  check("a cross-board answer proposes no pivot", both.some((q) => q.includes("delivery tracking")), false);
+
+  // A total one group carries is the thing worth interrogating.
+  const conc = deriveFollowUps({
+    ...base,
+    answer: "Tender dominates.",
+    steps: [{
+      name: "query_board",
+      trace: {
+        board: "deals",
+        groupBy: "sector",
+        top: { label: "Tender", metric: "sum_value", value: 532_000_000 },
+        caveats: ['"Tender" alone is 77.3% of the total by sum value; the headline figure is concentrated in one group rather than typical of the whole.'],
+      },
+    }],
+  });
+  check("concentration becomes a why question", conc.includes("Why does Tender account for so much of that?"), true);
+
+  // A thin column invites a data-quality question that names it.
+  const thin = deriveFollowUps({
+    ...base,
+    answer: "Total is 2.3B.",
+    steps: [{ name: "query_board", trace: { board: "deals", caveats: ['"Masked Deal value" (value) is only 48% filled - 179 of 344 rows are blank.'] } }],
+  });
+  check("a thin column is named in the follow-up", thin.includes("How reliable is the Masked Deal value column?"), true);
+
+  // A word that landed on several board values can be pulled apart.
+  const split = deriveFollowUps({
+    ...base,
+    answer: "Energy is strong.",
+    steps: [{ name: "query_board", trace: { board: "deals", resolved: [{ field: "sector", asked: "energy", used: ["Renewables", "Powerline"] }] } }],
+  });
+  check("a multi-value match offers a split", split.includes("Split Renewables and Powerline out separately."), true);
+
+  // Nothing already asked is offered back.
+  const repeat = deriveFollowUps({
+    answer: "Renewables leads.",
+    steps: [{ name: "query_board", trace: { board: "deals", filters: [{ field: "sector", value: "Renewables" }] } }],
+    asked: ["How is delivery tracking for Renewables?"],
+    fallback: FB,
+  });
+  check("an already-asked follow-up is dropped", repeat.includes("How is delivery tracking for Renewables?"), false);
+
+  // With no trace to read, the static list carries it — minus what was asked.
+  const bare = deriveFollowUps({ answer: "Hello.", steps: [], asked: ["Static one"], fallback: FB });
+  check("no trace falls back to the static list", bare, ["Static two", "Static three"]);
+
+  // Never more than three, and never a duplicate.
+  const many = deriveFollowUps({
+    ...base,
+    answer: "Lots.",
+    steps: [{
+      name: "query_board",
+      trace: {
+        board: "deals", groupBy: "sector", timeframe: "FY26",
+        top: { label: "Tender", metric: "sum_value", value: 1 },
+        resolved: [{ field: "sector", asked: "energy", used: ["Renewables", "Powerline"] }],
+        caveats: ['"X" is only 48% filled', '"Tender" alone is 77.3% concentrated in one group'],
+      },
+    }],
+  });
+  check("at most three are offered", many.length, 3);
+  check("and they are distinct", new Set(many).size, 3);
+
+  // A multi-value filter arrives comma-joined and must read as a sentence.
+  const listy = deriveFollowUps({
+    ...base,
+    answer: "Energy is strong.",
+    steps: [{ name: "query_board", trace: { board: "deals", filters: [{ field: "sector", value: "Renewables,Powerline" }] } }],
+  });
+  check("a comma-joined filter reads as prose", listy[0], "How is delivery tracking for Renewables and Powerline?");
+
+  const listy3 = deriveFollowUps({
+    ...base,
+    answer: "Several.",
+    steps: [{ name: "query_board", trace: { board: "deals", filters: [{ field: "sector", value: "A,B,C,D" }] } }],
+  });
+  check("a long list is truncated, not recited", listy3[0], "How is delivery tracking for A, B and others?");
+
+  // The engine's null caveat quotes the internal field key, not a column name.
+  const internal = deriveFollowUps({
+    ...base,
+    answer: "Total is 2.3B.",
+    steps: [{ name: "query_board", trace: { board: "deals", caveats: ['179 of 344 matched rows have no "value" value; they are excluded from sums and averages on that field.'] } }],
+  });
+  check("an internal field key is given its plain name", internal.includes("How reliable is the deal value column?"), true);
+
+  // Given both caveat shapes, the one naming the spreadsheet heading wins.
+  const bothCaveats = deriveFollowUps({
+    ...base,
+    answer: "Total is 2.3B.",
+    steps: [{ name: "query_board", trace: { board: "deals", caveats: [
+      '179 of 344 matched rows have no "value" value; they are excluded from sums and averages on that field.',
+      '"Masked Deal value" (value) is only 48% filled - 179 of 344 rows are blank.',
+    ] } }],
+  });
+  check("the spreadsheet heading is preferred", bothCaveats.includes("How reliable is the Masked Deal value column?"), true);
+
+  // Having answered the deals side for Renewables, the pivot must not bounce
+  // straight back to it from the work-order answer.
+  const bounce = deriveFollowUps({
+    ...base,
+    answer: "Renewables delivery is on track.",
+    steps: [{ name: "query_board", trace: { board: "work_orders", filters: [{ field: "sector", value: "Renewables" }] } }],
+    priorSteps: [{ name: "query_board", trace: { board: "deals", filters: [{ field: "sector", value: "Renewables" }] } }],
+  });
+  check("the pivot does not bounce back to covered ground", bounce.includes("What does the pipeline look like for Renewables?"), false);
+
+  // The same thin column should not be proposed on every turn it appears in.
+  const thinCav = '"Masked Deal value" (value) is only 48% filled - 179 of 344 rows are blank.';
+  const twice = deriveFollowUps({
+    ...base,
+    answer: "Another total.",
+    steps: [{ name: "query_board", trace: { board: "deals", caveats: [thinCav] } }],
+    priorSteps: [{ name: "query_board", trace: { board: "deals", caveats: [thinCav] } }],
+  });
+  check("a caveat already raised is not raised again", twice.includes("How reliable is the Masked Deal value column?"), false);
+
+  // A genuinely new concentration still earns a question.
+  const concCav = (g: string) => `"${g}" alone is 70% of the total by sum value; the headline figure is concentrated in one group rather than typical of the whole.`;
+  const fresh = deriveFollowUps({
+    ...base,
+    answer: "Completed leads.",
+    steps: [{ name: "query_board", trace: { board: "work_orders", groupBy: "status", top: { label: "Completed", metric: "count", value: 90 }, caveats: [concCav("Completed")] } }],
+    priorSteps: [{ name: "query_board", trace: { board: "deals", groupBy: "sector", top: { label: "Tender", metric: "sum_value", value: 1 }, caveats: [concCav("Tender")] } }],
+  });
+  check("a new concentration is still surfaced", fresh.includes("Why does Completed account for so much of that?"), true);
+
+  // The drill-down noun follows the board that was actually read.
+  const noun = (board: string) => deriveFollowUps({
+    ...base,
+    answer: "Grouped.",
+    steps: [{ name: "query_board", trace: { board, groupBy: "status", top: { label: "Completed", metric: "count", value: 90 } } }],
+    priorSteps: [{ trace: { board: board === "deals" ? "work_orders" : "deals" } }],
+  });
+  check("a work-order answer drills into work orders", noun("work_orders").includes("Which are the largest Completed work orders?"), true);
+  check("a deals answer drills into deals", noun("deals").includes("Which are the largest Completed deals?"), true);
+
+  // An answer that ends in a question wants an answer, not a new topic.
+  const clarify = deriveFollowUps({
+    ...base,
+    answer: "Do you mean **won deal value** or **billed work**?",
+    steps: [{ name: "query_board", trace: { board: "deals" } }],
+  });
+  check("a clarifying question offers its own options", clarify, ["Won deal value", "Billed work"]);
 }
 
 /* -------------------------------------------------------------------- out */

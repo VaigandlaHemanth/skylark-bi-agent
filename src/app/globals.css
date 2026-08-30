@@ -665,20 +665,73 @@ button.step[data-open] { background: var(--chip-hover); color: var(--text); }
   padding-top: 0.5rem;
 }
 
+/* ------------------------------------------------------------- follow-ups */
+/* Offered, not demanded: these sit below the answer at caption weight so the
+   eye lands on the analysis first and finds the next question only after. */
+
+.followups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.85rem 0 0.1rem;
+  padding-left: 1.85rem;
+}
+
+.fulabel {
+  font-size: 0.72rem;
+  font-weight: 590;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  text-transform: uppercase;
+  margin-right: 0.1rem;
+}
+
+.fu {
+  appearance: none;
+  font: inherit;
+  font-size: 0.83rem;
+  line-height: 1.25;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--separator);
+  border-radius: 999px;
+  padding: 0.34rem 0.72rem;
+  cursor: pointer;
+  text-align: left;
+  animation: rise 420ms var(--spring) both;
+  transition: transform var(--fast) var(--spring), background var(--fast) linear, border-color var(--fast) linear;
+}
+
+.fu:hover:not(:disabled) {
+  background: var(--surface-solid);
+  border-color: var(--hairline);
+  transform: translateY(-1px);
+}
+
+.fu:active:not(:disabled) { transform: scale(0.98); }
+.fu:disabled { opacity: 0.45; cursor: default; }
+
+@media (max-width: 640px) {
+  .followups { padding-left: 0; }
+  .fu { font-size: 0.8rem; }
+}
+
 /* --------------------------------------------------------- accessibility */
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
   .thread { scroll-behavior: auto; }
-  .step, .empty, .banner, .card, .ghost, .jump, .tracepanel { animation: fade 200ms ease both; }
+  .step, .empty, .banner, .card, .ghost, .jump, .tracepanel, .fu { animation: fade 200ms ease both; }
   .card:active, .send:active, .copy:active, .jump:active { transform: none; }
-  .card:hover, .jump:hover { transform: none; }
+  .card:hover, .jump:hover, .fu:hover:not(:disabled) { transform: none; }
+  .fu:active:not(:disabled) { transform: none; }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 }
 
 @media (prefers-reduced-transparency: reduce) {
   .topbar, .composer { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; mask-image: none; }
-  .field, .card, .jump { background: var(--surface-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .field, .card, .jump, .fu { background: var(--surface-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 @media (prefers-contrast: more) {

@@ -1,18 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { TraceDetail } from "@/lib/agent";
+import { deriveFollowUps } from "@/lib/followups";
 
 type Role = "user" | "assistant";
-type TraceDetail = {
-  query?: string;
-  matched?: number;
-  scanned?: number;
-  totals?: Record<string, number | null>;
-  resolved?: Array<{ field: string; asked: string; used: string[] }>;
-  caveats?: string[];
-};
 
-type Step = { label: string; detail?: string; trace?: TraceDetail; kind: "run" | "done" | "err" };
+type Step = { label: string; name?: string; detail?: string; trace?: TraceDetail; kind: "run" | "done" | "err" };
 type Grounding = { checked: number; grounded: number; clean: boolean };
 type Turn = { role: Role; content: string; steps?: Step[]; grounding?: Grounding };
 
@@ -134,12 +128,35 @@ export default function Page() {
       .catch(() => setHealth(null));
   }, []);
 
-  // Rotate the ghost hint while the field is idle.
+  // Suggesting a question the user just asked is noise, so the rotation only
+  // offers what this conversation has not covered. Once everything is used it
+  // falls back to a neutral prompt rather than repeating.
+  const unasked = (() => {
+    const asked = new Set(turns.filter((t) => t.role === "user").map((t) => t.content.trim().toLowerCase()));
+    return SUGGESTIONS.filter((s) => !asked.has(s.q.toLowerCase()));
+  })();
+
+  const hint = unasked.length ? unasked[hintIdx % unasked.length].q : "Ask a follow-up, or anything else about the boards";
+
+  // What to ask next, read off the trace of the answer just given: the board it
+  // did not look at, the group carrying the total, the caveats that fired.
+  const lastTurn = turns[turns.length - 1];
+  const followUps =
+    !busy && lastTurn?.role === "assistant" && lastTurn.content && !lastTurn.content.startsWith("**Something went wrong") && !lastTurn.content.startsWith("**Could not reach")
+      ? deriveFollowUps({
+          answer: lastTurn.content,
+          steps: lastTurn.steps ?? [],
+          priorSteps: turns.slice(0, -1).flatMap((t) => t.steps ?? []),
+          asked: turns.filter((t) => t.role === "user").map((t) => t.content),
+          fallback: unasked.map((s) => s.q),
+        })
+      : [];
+
   useEffect(() => {
-    if (draft || busy) return;
-    const id = setInterval(() => setHintIdx((i) => (i + 1) % SUGGESTIONS.length), 7000);
+    if (draft || busy || unasked.length < 2) return;
+    const id = setInterval(() => setHintIdx((i) => i + 1), 7000);
     return () => clearInterval(id);
-  }, [draft, busy]);
+  }, [draft, busy, unasked.length]);
 
   useEffect(() => {
     const el = threadRef.current;
@@ -232,7 +249,7 @@ export default function Page() {
             } else if (ev.type === "tool") {
               patch((t) => ({
                 ...t,
-                steps: [...(t.steps ?? []).filter((s) => s.kind !== "run"), { label: TOOL_LABELS[ev.name] ?? ev.name, kind: "run" }],
+                steps: [...(t.steps ?? []).filter((s) => s.kind !== "run"), { label: TOOL_LABELS[ev.name] ?? ev.name, name: ev.name, kind: "run" }],
               }));
             } else if (ev.type === "tool_result") {
               patch((t) => {
@@ -357,7 +374,6 @@ export default function Page() {
 
   const provider = health?.llm.provider;
   const rows = health?.monday.datasets?.reduce((n, d) => n + (d.rows ?? 0), 0) ?? 0;
-  const hint = SUGGESTIONS[hintIdx].q;
 
   return (
     <div className="app">
@@ -391,7 +407,7 @@ export default function Page() {
               I read your monday.com work orders and deals live, clean the messy bits, and tell you what the numbers mean — with the caveats attached.
             </p>
             <div className="cards" role="list">
-              {SUGGESTIONS.map((s, i) => (
+              {(unasked.length ? unasked : SUGGESTIONS).map((s, i) => (
                 <button key={s.q} role="listitem" className="card" style={{ animationDelay: `${80 + i * 45}ms` }} onClick={() => ask(s.q)} disabled={busy}>
                   <span className="cat">{s.cat}</span>
                   <span className="q">{s.q}</span>
@@ -474,6 +490,16 @@ export default function Page() {
                   openStep === `${i}:${j}` && s.trace ? <TracePanel key={`p${j}`} trace={s.trace} /> : null,
                 )}
                 {t.content && <div className="answer">{renderMarkdown(t.content)}</div>}
+                {i === turns.length - 1 && followUps.length > 0 && (
+                  <div className="followups">
+                    <span className="fulabel">Next</span>
+                    {followUps.map((q, k) => (
+                      <button key={q} className="fu" style={{ animationDelay: `${k * 60}ms` }} onClick={() => ask(q)} disabled={busy}>
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -505,7 +531,7 @@ export default function Page() {
               }}
               onKeyDown={(e) => {
                 // Tab accepts the ghost suggestion, like inline autocomplete.
-                if (e.key === "Tab" && !e.shiftKey && !draft.trim() && !busy) {
+                if (e.key === "Tab" && !e.shiftKey && !draft.trim() && !busy && unasked.length) {
                   e.preventDefault();
                   setDraft(hint);
                   requestAnimationFrame(grow);
