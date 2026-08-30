@@ -26,9 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Match the project's runtime (nodeVersion 24.x): the prebuilt output is
+      # produced here and executed there, so a version split risks shipping a
+      # build the runtime never actually ran against.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install
