@@ -35,7 +35,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "query_board",
     description:
-      "Filter, group and aggregate one board - the ONLY way to produce a number. Filter values resolve against the board's real vocabulary (sector='energy' finds Renewables+Powerline) and the result reports what matched.",
+      "Filter, group and aggregate one board - the ONLY way to produce a number. Filter values resolve against the board's real vocabulary (sector='energy' finds Renewables+Powerline) and the result reports what matched. Grouped results include share_pct per group, so never divide to get a percentage.",
     parameters: {
       type: "object",
       properties: {
@@ -95,6 +95,26 @@ export const TOOL_SPECS: ToolSpec[] = [
     description:
       "Data-quality report: per-field fill rates, unparseable values, duplicate client spellings, dropped header rows. Use for 'how reliable is this'.",
     parameters: { type: "object", properties: { board: BOARD_ARG }, required: ["board"] },
+  },
+  {
+    name: "compute",
+    description:
+      "Derived arithmetic (share, difference, percent change, ratio, running total) over figures you already retrieved. You must NEVER divide, subtract or percentage in your head - call this so the arithmetic is reproducible and appears in the audit trail. Pass only numbers that came back from a tool.",
+    parameters: {
+      type: "object",
+      properties: {
+        op: {
+          type: "string",
+          enum: ["share", "delta", "percent_change", "ratio", "sum", "average"],
+          description:
+            'share = values as a % of total (needs total). delta = second minus first. percent_change = change from first to second, as %. ratio = first divided by second. sum / average over values.',
+        },
+        values: { type: "array", description: "Figures taken verbatim from previous tool results.", items: { type: "number" } },
+        total: { type: "number", description: 'The whole, for op "share".' },
+        label: { type: "string", description: "What is being computed, e.g. 'top 3 clients as a share of receivables'." },
+      },
+      required: ["op", "values"],
+    },
   },
   {
     name: "leadership_brief",
@@ -216,6 +236,54 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
         duplicate_client_spellings: ds.quality.duplicateClients,
         warnings: ds.quality.warnings,
       };
+    }
+
+    case "compute": {
+      const values = (Array.isArray(args.values) ? args.values : [])
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v));
+      if (!values.length) return { error: "compute needs at least one numeric value taken from a previous tool result." };
+
+      const op = String(args.op ?? "sum");
+      const total = Number(args.total);
+      const label = args.label ? String(args.label) : undefined;
+      const round = (n: number) => Math.round(n * 100) / 100;
+      const sum = values.reduce((a, b) => a + b, 0);
+
+      switch (op) {
+        case "share": {
+          if (!Number.isFinite(total) || total === 0) {
+            return { error: 'op "share" needs a non-zero "total" - pass the figure the parts should be measured against.' };
+          }
+          return {
+            label, op, inputs: values, total,
+            share_pct: round((sum / total) * 100),
+            expression: `(${values.join(" + ")}) / ${total} × 100`,
+          };
+        }
+        case "delta": {
+          if (values.length < 2) return { error: 'op "delta" needs two values: [from, to].' };
+          return { label, op, inputs: values, delta: round(values[1] - values[0]), expression: `${values[1]} − ${values[0]}` };
+        }
+        case "percent_change": {
+          if (values.length < 2) return { error: 'op "percent_change" needs two values: [from, to].' };
+          if (values[0] === 0) return { error: "percent change from zero is undefined; report the absolute figures instead." };
+          return {
+            label, op, inputs: values,
+            percent_change: round(((values[1] - values[0]) / Math.abs(values[0])) * 100),
+            expression: `(${values[1]} − ${values[0]}) / |${values[0]}| × 100`,
+          };
+        }
+        case "ratio": {
+          if (values.length < 2) return { error: 'op "ratio" needs two values.' };
+          if (values[1] === 0) return { error: "cannot divide by zero." };
+          return { label, op, inputs: values, ratio: round(values[0] / values[1]), expression: `${values[0]} / ${values[1]}` };
+        }
+        case "average":
+          return { label, op, inputs: values, average: round(sum / values.length), expression: `(${values.join(" + ")}) / ${values.length}` };
+        default:
+          return { label, op: "sum", inputs: values, sum: round(sum), expression: values.join(" + ") };
+      }
     }
 
     case "leadership_brief":

@@ -411,6 +411,17 @@ export function runQuery(ds: Dataset, spec: QuerySpec): QueryResult {
       return { [spec.group_by!]: label, ...aggregate(b.rows, defs).out };
     });
 
+    // Each group's share of the whole, computed here so the model never has to
+    // divide. "The top three are 53% of the total" is the single most common
+    // follow-up, and it must be a retrieved figure like any other.
+    const shareKey = defs.find((d) => d.fn === "sum")?.key ?? (defs.some((d) => d.fn === "count") ? "count" : undefined);
+    if (shareKey) {
+      const whole = groups.reduce((n, g) => n + (Number(g[shareKey]) || 0), 0);
+      if (whole > 0) {
+        for (const g of groups) g.share_pct = Math.round(((Number(g[shareKey]) || 0) / whole) * 1000) / 10;
+      }
+    }
+
     // Accept "sum:value desc" as well as "sum_value desc"; fall back to text
     // comparison when the key is not numeric, so sorting never no-ops.
     const sortKey = ((spec.sort || "").replace(/\s*(desc|asc)$/i, "").trim() || defs.find((d) => d.fn !== "count")?.key || "count").replace(":", "_");

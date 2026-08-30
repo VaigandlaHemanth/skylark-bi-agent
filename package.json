@@ -11,7 +11,8 @@
     "e2etest": "tsx scripts/e2etest.mts",
     "test": "npm run selftest && npm run e2etest",
     "verify:csv": "tsx scripts/verify-real-data.mts",
-    "import:monday": "tsx scripts/import-to-monday.mts"
+    "import:monday": "tsx scripts/import-to-monday.mts",
+    "eval": "tsx scripts/eval.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",

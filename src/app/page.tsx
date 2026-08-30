@@ -3,7 +3,16 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 type Role = "user" | "assistant";
-type Step = { label: string; detail?: string; kind: "run" | "done" | "err" };
+type TraceDetail = {
+  query?: string;
+  matched?: number;
+  scanned?: number;
+  totals?: Record<string, number | null>;
+  resolved?: Array<{ field: string; asked: string; used: string[] }>;
+  caveats?: string[];
+};
+
+type Step = { label: string; detail?: string; trace?: TraceDetail; kind: "run" | "done" | "err" };
 type Turn = { role: Role; content: string; steps?: Step[] };
 
 type Health = {
@@ -27,6 +36,7 @@ const TOOL_LABELS: Record<string, string> = {
   query_board: "Querying monday.com",
   sample_rows: "Inspecting records",
   data_quality: "Checking data quality",
+  compute: "Computing a derived figure",
   leadership_brief: "Assembling exec snapshot",
 };
 
@@ -74,6 +84,7 @@ export default function Page() {
   const [hintIdx, setHintIdx] = useState(0);
   const [showJump, setShowJump] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
+  const [openStep, setOpenStep] = useState<string | null>(null);
 
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -194,7 +205,7 @@ export default function Page() {
             const line = chunk.split("\n").find((l) => l.startsWith("data: "));
             if (!line) continue;
 
-            let ev: Record<string, string>;
+            let ev: Record<string, any>;
             try {
               ev = JSON.parse(line.slice(6));
             } catch {
@@ -216,7 +227,14 @@ export default function Page() {
                   if (steps[j].kind === "run") { last = j; break; }
                 }
                 const failed = ev.summary?.startsWith("failed");
-                if (last >= 0) steps[last] = { ...steps[last], kind: failed ? "err" : "done", detail: ev.summary };
+                if (last >= 0) {
+                  steps[last] = {
+                    ...steps[last],
+                    kind: failed ? "err" : "done",
+                    detail: ev.summary as string | undefined,
+                    trace: (ev as unknown as { detail?: TraceDetail }).detail,
+                  };
+                }
                 return { ...t, steps };
               });
             } else if (ev.type === "answer") {
@@ -347,13 +365,34 @@ export default function Page() {
                 </div>
                 {!!t.steps?.length && (
                   <div className="trace">
-                    {t.steps.map((s, j) => (
-                      <span className="step" data-kind={s.kind === "err" ? "err" : undefined} key={j} title={s.detail}>
-                        {s.kind === "run" ? <span className="pulse" /> : s.kind === "err" ? "!" : "✓"}
-                        {s.label}
-                      </span>
-                    ))}
+                    {t.steps.map((s, j) => {
+                      const id = `${i}:${j}`;
+                      const open = openStep === id;
+                      return s.trace ? (
+                        <button
+                          key={j}
+                          className="step"
+                          data-kind={s.kind === "err" ? "err" : undefined}
+                          data-open={open || undefined}
+                          onClick={() => setOpenStep(open ? null : id)}
+                          aria-expanded={open}
+                          title="Show the query behind these numbers"
+                        >
+                          {s.kind === "run" ? <span className="pulse" /> : s.kind === "err" ? "!" : "✓"}
+                          {s.label}
+                          <span className="caret" aria-hidden>{open ? "−" : "+"}</span>
+                        </button>
+                      ) : (
+                        <span className="step" data-kind={s.kind === "err" ? "err" : undefined} key={j} title={s.detail}>
+                          {s.kind === "run" ? <span className="pulse" /> : s.kind === "err" ? "!" : "✓"}
+                          {s.label}
+                        </span>
+                      );
+                    })}
                   </div>
+                )}
+                {t.steps?.map((s, j) =>
+                  openStep === `${i}:${j}` && s.trace ? <TracePanel key={`p${j}`} trace={s.trace} /> : null,
                 )}
                 {t.content && <div className="answer">{renderMarkdown(t.content)}</div>}
               </>
@@ -415,6 +454,64 @@ export default function Page() {
         </div>
         <p className="foot">Read-only. Figures are computed in code from live board data, never written by the model.</p>
       </div>
+    </div>
+  );
+}
+
+function TracePanel({ trace }: { trace: TraceDetail }) {
+  const fmt = (n: number | null) =>
+    n == null ? "—" : Number.isInteger(n) ? n.toLocaleString("en-IN") : n.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+
+  return (
+    <div className="tracepanel">
+      {trace.query && (
+        <div className="trow">
+          <span className="tlabel">Query</span>
+          <code className="tquery">{trace.query}</code>
+        </div>
+      )}
+
+      {trace.resolved?.map((r) => (
+        <div className="trow" key={r.field}>
+          <span className="tlabel">Resolved</span>
+          <span className="tval">
+            {r.field} “{r.asked}” → {r.used.map((u) => <em key={u}>{u}</em>).reduce<ReactNode[]>((acc, el, k) => (k ? [...acc, ", ", el] : [el]), [])}
+          </span>
+        </div>
+      ))}
+
+      {trace.matched !== undefined && (
+        <div className="trow">
+          <span className="tlabel">Rows</span>
+          <span className="tval tnum">
+            {fmt(trace.matched)} matched of {fmt(trace.scanned ?? 0)} scanned
+          </span>
+        </div>
+      )}
+
+      {trace.totals && (
+        <div className="trow">
+          <span className="tlabel">Computed</span>
+          <span className="tval tnum">
+            {Object.entries(trace.totals).map(([k, v]) => (
+              <span className="tstat" key={k}>
+                <b>{k}</b> {fmt(v)}
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
+
+      {trace.caveats?.length ? (
+        <div className="trow">
+          <span className="tlabel">Caveats</span>
+          <ul className="tcaveats">
+            {trace.caveats.map((c, i) => (
+              <li key={i}>{c}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }

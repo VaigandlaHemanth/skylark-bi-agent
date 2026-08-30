@@ -7,10 +7,24 @@ import { executeTool, TOOL_SPECS } from "./tools";
 
 const MAX_STEPS = 6;
 
+/**
+ * What the UI shows when a reviewer opens up a step. The claim "no number is
+ * written by the model" is only credible if the query behind each figure is
+ * inspectable, so this ships to the client rather than living in a debug log.
+ */
+export type TraceDetail = {
+  query?: string;
+  matched?: number;
+  scanned?: number;
+  totals?: Record<string, number | null>;
+  resolved?: Array<{ field: string; asked: string; used: string[] }>;
+  caveats?: string[];
+};
+
 export type AgentEvent =
   | { type: "status"; text: string }
   | { type: "tool"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; summary: string }
+  | { type: "tool_result"; name: string; summary: string; detail?: TraceDetail }
   | { type: "answer"; text: string }
   | { type: "error"; text: string; hint?: string };
 
@@ -27,6 +41,7 @@ ${schema}
 
 ## Hard rules
 1. Every number you state must come from a tool result. Never add, average or estimate figures yourself. If you need a number you do not have, call a tool.
+1b. This includes DERIVED figures. Percentages, shares, differences, ratios and growth rates are numbers too - call "compute" with the figures you already retrieved rather than working them out. Grouped results already carry share_pct, so use that instead of dividing.
 2. Filter using the vocabulary listed above, not your own. The boards use Skylark's wording. If a value you want is not listed, call distinct_values first rather than guessing. query_board does resolve near-misses (asking for sector "energy" finds the energy-type values), and it reports what it matched under "resolved_values" - repeat that to the user when it is not obvious.
 3. If a filter returns 0 rows, do not report "0" until you have checked with distinct_values or sample_rows that the value exists at all. A zero caused by a wrong filter is a wrong answer.
 4. Surface data-quality caveats. Tool results carry a "caveats" array; fold the material ones into your answer. A figure built on a half-filled column must say so - the deal value column in particular is sparsely populated.
@@ -115,6 +130,62 @@ function compact(turns: Turn[]): void {
   }
 }
 
+/** The query in one line, as a person would read it back. */
+function queryLine(args: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  if (args.board) parts.push(String(args.board));
+
+  const filters = Array.isArray(args.filters) ? (args.filters as Array<Record<string, unknown>>) : [];
+  for (const f of filters) {
+    if (!f?.field) continue;
+    const op = String(f.op ?? "eq");
+    const symbol = op === "eq" ? "=" : op === "ne" ? "≠" : op === "in" ? "in" : op;
+    parts.push(`${f.field} ${symbol} ${f.value ?? ""}`.trim());
+  }
+
+  if (args.timeframe) parts.push(`during ${args.timeframe}`);
+  if (args.group_by) parts.push(`grouped by ${args.group_by}`);
+  if (Array.isArray(args.metrics) && args.metrics.length) parts.push((args.metrics as string[]).join(", "));
+  if (args.field) parts.push(`field ${args.field}`);
+
+  return parts.length ? parts.join("  ·  ") : undefined;
+}
+
+function traceDetail(args: Record<string, unknown>, result: unknown): TraceDetail | undefined {
+  const r = result as Record<string, any>;
+  if (!r || typeof r !== "object") return undefined;
+
+  const detail: TraceDetail = {};
+  const q = queryLine(args);
+  if (q) detail.query = q;
+
+  if (typeof r.matched === "number") {
+    detail.matched = r.matched;
+    detail.scanned = r.scanned;
+  }
+  if (r.totals && Object.keys(r.totals).length) detail.totals = r.totals;
+  if (Array.isArray(r.resolved_values) && r.resolved_values.length) {
+    detail.resolved = r.resolved_values.map((v: Record<string, unknown>) => ({
+      field: String(v.field),
+      asked: String(v.you_asked_for),
+      used: (v.board_values_used as string[]) ?? [],
+    }));
+  }
+  if (Array.isArray(r.caveats) && r.caveats.length) detail.caveats = r.caveats.slice(0, 4);
+
+  // compute() returns the expression it evaluated; show the arithmetic itself.
+  if (typeof r.expression === "string") {
+    detail.query = r.label ? `${r.label}:  ${r.expression}` : r.expression;
+    const out: Record<string, number | null> = {};
+    for (const k of ["share_pct", "delta", "percent_change", "ratio", "sum", "average"]) {
+      if (typeof r[k] === "number") out[k] = r[k];
+    }
+    if (Object.keys(out).length) detail.totals = out;
+  }
+
+  return Object.keys(detail).length ? detail : undefined;
+}
+
 function summarise(result: unknown): string {
   const r = result as Record<string, any>;
   if (r?.matched !== undefined) {
@@ -184,7 +255,7 @@ export async function* runAgent(history: ChatMessage[]): AsyncGenerator<AgentEve
       let payload: unknown;
       try {
         payload = await executeTool(call.name, call.args);
-        yield { type: "tool_result", name: call.name, summary: summarise(payload) };
+        yield { type: "tool_result", name: call.name, summary: summarise(payload), detail: traceDetail(call.args, payload) };
       } catch (err) {
         const message =
           err instanceof MondayError
