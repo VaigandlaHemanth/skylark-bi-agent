@@ -165,7 +165,7 @@ body::before {
 }
 
 .status {
-  margin-left: auto;
+  margin-left: auto; /* overridden to a fixed gap when .newchat precedes it */
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -486,24 +486,29 @@ body::before {
   to   { opacity: 1; transform: none; }
 }
 
-.kbdhint { flex: none; display: inline-flex; align-items: center; }
-
-@media (hover: none) {
-  .kbdhint { display: none; } /* touchscreens have no Tab key */
-}
-
-kbd {
-  font: inherit;
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--text-2);
-  background: var(--chip);
+.newchat {
+  appearance: none;
   border: 1px solid var(--separator);
-  border-bottom-width: 2px;
-  border-radius: 0.4rem;
-  padding: 0.14rem 0.42rem;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.75rem;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: -0.002em;
+  cursor: pointer;
+  transition: background var(--fast) linear, border-color var(--fast) linear, transform var(--fast) var(--spring);
 }
+
+.newchat:hover { background: var(--surface-solid); border-color: var(--hairline); }
+.newchat:active { transform: scale(0.96); }
+.newchat:disabled { opacity: 0.45; cursor: default; }
+.newchat + .status { margin-left: 0.6rem; }
 
 .send {
   appearance: none;

@@ -54,6 +54,11 @@ const Icon = {
       <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ),
+  plus: (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  ),
   down: (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M8 3.5v9M4.2 8.8 8 12.6l3.8-3.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -73,6 +78,28 @@ export default function Page() {
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // The conversation survives a refresh - per-browser convenience only.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("skylark-chat");
+      if (saved) {
+        const parsed = JSON.parse(saved) as Turn[];
+        if (Array.isArray(parsed) && parsed.length) setTurns(parsed.slice(-24));
+      }
+    } catch {
+      /* corrupted or unavailable storage - start fresh */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (busy) return; // save settled conversations only
+    try {
+      if (turns.length) localStorage.setItem("skylark-chat", JSON.stringify(turns.slice(-24)));
+    } catch {
+      /* storage full or unavailable */
+    }
+  }, [turns, busy]);
 
   useEffect(() => {
     fetch("/api/health")
@@ -233,6 +260,17 @@ export default function Page() {
     [busy, grow, turns],
   );
 
+  const newChat = useCallback(() => {
+    abortRef.current?.abort();
+    setTurns([]);
+    try {
+      localStorage.removeItem("skylark-chat");
+    } catch {
+      /* storage unavailable */
+    }
+    inputRef.current?.focus();
+  }, []);
+
   const copyAnswer = useCallback((index: number, content: string) => {
     navigator.clipboard?.writeText(content).then(() => {
       setCopied(index);
@@ -254,6 +292,12 @@ export default function Page() {
             {health?.ready ? `${rows.toLocaleString()} live rows across 2 monday.com boards` : "Business intelligence over monday.com"}
           </span>
         </div>
+        {turns.length > 0 && (
+          <button className="newchat" onClick={newChat} disabled={busy}>
+            {Icon.plus}
+            <span>New chat</span>
+          </button>
+        )}
         <span className="status" title={provider ? `${provider} / ${health?.llm.model}` : "Not configured"}>
           <span className="dot" data-state={health ? (health.ready ? "ok" : "bad") : undefined} />
           {health ? (health.ready ? "Connected" : "Setup needed") : "Checking"}
@@ -359,11 +403,6 @@ export default function Page() {
               disabled={busy}
             />
           </div>
-          {!draft && !busy && (
-            <span className="kbdhint" aria-hidden>
-              <kbd>Tab</kbd>
-            </span>
-          )}
           {busy ? (
             <button className="send stop" onClick={stop} aria-label="Stop generating">
               {Icon.stop}
